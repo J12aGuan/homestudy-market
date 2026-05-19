@@ -1,7 +1,5 @@
 # HomeStudy Market
 
-Suggested folder name: `games/homestudy-market-spring26/`
-
 ## What this game is
 
 HomeStudy Market is a two-phase housing-market experiment built for Qualtrics.
@@ -160,16 +158,4 @@ Phase 2 saves:
 
 - This is not a standalone app yet; full functionality depends on Qualtrics.
 - There is no local mock harness for `Qualtrics.SurveyEngine`, so browser-only testing is limited.
-- The README documents the expected survey structure, but collaborator access and Survey Flow configuration must still be confirmed in the live Qualtrics project.
 - Vercel deployment is not applicable for the current codebase unless the project is later wrapped in a standalone web app.
-- This folder is not currently inside a Git repository in the local workspace, so GitHub push / branch confirmation / transfer steps still need to be completed from the actual repo copy.
-
-## Final submission checklist
-
-- Move this project into a clearly named folder such as `games/homestudy-market-spring26/`
-- Push the final code to the shared BOBALAB GitHub repository
-- Make sure the final branch is the designated submission branch
-- Confirm the Qualtrics survey flow matches the structure documented above
-- Add Park (`parksinchaisri@berkeley.edu`) as a Qualtrics collaborator if not already added
-- Preview the full survey from start to finish
-- If a production deployment is later created, add the URL here and transfer the Vercel project if needed
