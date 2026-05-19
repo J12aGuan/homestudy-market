@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Research Design Memo: Incentive-Compatible Housing Market Simulation</title>
+  <style>
+    body {
+      font-family: Georgia, "Times New Roman", serif;
+      line-height: 1.55;
+      color: #111;
+      max-width: 900px;
+      margin: 40px auto;
+      padding: 0 24px 48px;
+    }
+    h1, h2, h3 {
+      font-family: Arial, Helvetica, sans-serif;
+      line-height: 1.25;
+      color: #111;
+    }
+    h1 {
+      font-size: 28px;
+      margin: 0 0 18px;
+    }
+    h2 {
+      font-size: 20px;
+      margin-top: 28px;
+      margin-bottom: 10px;
+      border-bottom: 1px solid #ddd;
+      padding-bottom: 4px;
+    }
+    h3 {
+      font-size: 16px;
+      margin-top: 18px;
+      margin-bottom: 8px;
+    }
+    p {
+      margin: 10px 0;
+    }
+    ol, ul {
+      margin: 8px 0 12px 24px;
+    }
+    li {
+      margin: 4px 0;
+    }
+    .meta {
+      color: #444;
+      margin-bottom: 22px;
+    }
+    .equation {
+      font-family: "Courier New", monospace;
+      background: #f6f6f6;
+      border: 1px solid #e3e3e3;
+      padding: 12px 14px;
+      margin: 12px 0;
+      white-space: pre-wrap;
+    }
+    .ref {
+      padding-left: 18px;
+      text-indent: -18px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Research Design Memo: Incentive-Compatible Housing Market Simulation</h1>
+  <p class="meta"><strong>Working title:</strong> Evaluating RL-Based Dynamic Housing Pricing in an Incentive-Compatible Simulated Housing Market</p>
+
+  <h2>Purpose</h2>
+  <p>This memo summarizes the research design, experimental flow, measurement strategy, and empirical analysis plan for a two-phase housing-market experiment. The goal is to provide a strong foundation for the eventual paper while preserving a clear link between the experimental design and the theoretical motivation behind it.</p>
+
+  <h2>1. Research Question</h2>
+  <p>The core question is whether a reinforcement-learning-based dynamic pricing policy leads to different participant behavior and market outcomes than a baseline pricing policy in a stylized but incentive-compatible housing search environment.</p>
+  <p>More specifically, the project asks:</p>
+  <ol>
+    <li>Do participants make systematically different purchase decisions under RL-based pricing than under the baseline?</li>
+    <li>Does RL pricing alter search behavior, waiting behavior, and timing of purchase?</li>
+    <li>Does RL pricing generate higher realized seller revenue, different buyer surplus, or different rates of missed purchase?</li>
+    <li>How do stated preferences from an initial elicitation phase relate to revealed choices in a dynamic market phase?</li>
+  </ol>
+
+  <h2>2. Motivation</h2>
+  <p>Housing purchase decisions are dynamic, high-stakes, and path-dependent. A participant may value a given property highly but still rationally delay purchase if she expects better opportunities or more favorable prices later. This makes a static willingness-to-pay measure incomplete on its own.</p>
+  <p>The experiment therefore separates:</p>
+  <ol>
+    <li>A preference elicitation phase that measures baseline valuations.</li>
+    <li>A dynamic market phase in which participants face time pressure, budget depletion, listing expiration, and changing prices.</li>
+  </ol>
+  <p>This separation is useful for both conceptual and methodological reasons. It allows the study to distinguish between stated value and dynamic revealed choice, and it also keeps the initial elicitation task relatively simple. That simplicity is desirable because the belief-elicitation literature emphasizes that excessive complexity can reduce data quality and participant comprehension (Charness, Gneezy, and Rasocha, 2021).</p>
+
+  <h2>3. Conceptual Framework</h2>
+  <p>The design assumes that participants enter the market with latent preferences over homes. Phase 1 elicits these preferences in a low-complexity setting. Phase 2 then embeds those same participants in a dynamic environment where decisions depend not only on property value, but also on timing, expectations, budget constraints, opportunity cost of delay, and market pressure.</p>
+  <p>Under this framework:</p>
+  <ol>
+    <li>Phase 1 measures a participant-level valuation anchor.</li>
+    <li>Phase 2 measures strategic adaptation to a dynamic pricing environment.</li>
+    <li>Differences across treatment arms reveal how the pricing algorithm changes behavior conditional on preferences.</li>
+  </ol>
+
+  <h2>4. Experimental Design</h2>
+  <h3>4.1 Overview</h3>
+  <p>Participants complete a two-phase experiment.</p>
+  <ol>
+    <li><strong>Phase 1: Property valuation.</strong> Participants review a fixed set of properties and report the maximum price they would be willing to pay for each one.</li>
+    <li><strong>Phase 2: Dynamic market simulation.</strong> Participants enter a multi-month housing market in which they can inspect properties, wait, or purchase. Each month has a fixed duration. Waiting reduces available money through rent and may cause desirable listings to disappear or become more expensive.</li>
+  </ol>
+
+  <h3>4.2 Treatment Arms</h3>
+  <p>The main treatment variation is the pricing mechanism applied in Phase 2.</p>
+  <ol>
+    <li><strong>Baseline pricing treatment.</strong> Property prices evolve according to the benchmark rule.</li>
+    <li><strong>RL pricing treatment.</strong> Property prices evolve according to the reinforcement-learning-based pricing policy.</li>
+  </ol>
+
+  <h3>4.3 Unit of Randomization</h3>
+  <p>The participant is the unit of randomization. Each participant is assigned to exactly one treatment condition.</p>
+
+  <h2>5. Phase 1: Preference Elicitation</h2>
+  <h3>5.1 Objective</h3>
+  <p>Phase 1 is designed to collect participant-specific valuations for a common set of homes. These measures serve as a baseline for later purchase behavior.</p>
+
+  <h3>5.2 Design Principles</h3>
+  <p>Phase 1 should remain simple, untimed, and low in cognitive burden. This is consistent with the methodological recommendation that belief or valuation elicitation should avoid unnecessary complexity when possible, since participant confusion can reduce reliability (Charness et al., 2021).</p>
+
+  <h3>5.3 Task</h3>
+  <p>For each property, the participant records:</p>
+  <ol>
+    <li>Maximum willingness to pay.</li>
+    <li>Optional indicators such as whether they would attend an open house or view more detail.</li>
+  </ol>
+
+  <h3>5.4 Why No Hard Timer</h3>
+  <p>Phase 1 should not impose a strict countdown. A hard timer would risk changing the construct from “valuation” to “valuation under pressure.” The cleaner interpretation is to let participants finish at their own pace while recording time spent and interaction patterns for analysis.</p>
+
+  <h3>5.5 Data Collected</h3>
+  <ol>
+    <li>Property-level WTP.</li>
+    <li>Interaction timeline, including valuation edits and time spent thinking.</li>
+    <li>Optional auxiliary engagement signals such as open-house toggles.</li>
+  </ol>
+
+  <h2>6. Phase 2: Dynamic Housing Market</h2>
+  <h3>6.1 Objective</h3>
+  <p>Phase 2 is the core behavioral task. It translates static preferences into dynamic decision-making under changing prices, budget constraints, and time pressure.</p>
+
+  <h3>6.2 Market Rules</h3>
+  <ol>
+    <li>Participants begin with a fixed cash endowment.</li>
+    <li>Each month lasts a fixed number of seconds.</li>
+    <li>Waiting one month reduces available cash through rent.</li>
+    <li>Listings may appear later, expire, or become unavailable.</li>
+    <li>Participants may purchase at most one house.</li>
+    <li>If a participant actively skips to month end, the interface enforces a countdown so the time cost of waiting remains real.</li>
+  </ol>
+
+  <h3>6.3 Why Month-Based Timing Matters</h3>
+  <p>The experiment operationalizes dynamic housing search through repeated month-level decisions. This creates a tractable, comparable decision cycle while preserving the logic of real market delay: waiting has consequences.</p>
+
+  <h3>6.4 Current Behavioral Logging</h3>
+  <p>Phase 2 now records timeline data at the session level, including:</p>
+  <ol>
+    <li>Thinking periods.</li>
+    <li>Property selection.</li>
+    <li>Wallet opening.</li>
+    <li>Overlay closing.</li>
+    <li>Buy attempts.</li>
+    <li>Skip-month actions.</li>
+    <li>Countdown waiting time.</li>
+    <li>Automatic month advancement.</li>
+    <li>Final purchase or market close outcome.</li>
+  </ol>
+  <p>These logs are valuable because they support richer process analysis beyond end outcomes alone.</p>
+
+  <h2>7. Outcome Measures</h2>
+  <h3>7.1 Primary Outcomes</h3>
+  <ol>
+    <li>Whether the participant purchases a home.</li>
+    <li>Final purchase price.</li>
+    <li>Final month of purchase.</li>
+    <li>Final remaining money.</li>
+    <li>Rent paid.</li>
+    <li>Total seller revenue under each pricing regime.</li>
+  </ol>
+
+  <h3>7.2 Secondary Behavioral Outcomes</h3>
+  <ol>
+    <li>Number of months waited before purchase.</li>
+    <li>Number of listings inspected.</li>
+    <li>Number of skip-to-month-end actions.</li>
+    <li>Time spent on property detail views.</li>
+    <li>Time spent in countdown waiting.</li>
+    <li>Whether the participant times out without purchase.</li>
+    <li>Whether the participant buys below, near, or above their own Phase 1 WTP benchmark.</li>
+  </ol>
+
+  <h3>7.3 Derived Measures</h3>
+  <ol>
+    <li><strong>Valuation gap:</strong> purchase price minus Phase 1 WTP for the purchased property.</li>
+    <li><strong>Delay sensitivity:</strong> how strongly participants respond to rent pressure and time loss.</li>
+    <li><strong>Search intensity:</strong> number of property inspections and total deliberation time.</li>
+    <li><strong>Purchase discipline:</strong> extent to which a participant avoids purchasing properties above stated WTP.</li>
+  </ol>
+
+  <h2>8. Beliefs And Elicitation Strategy</h2>
+  <p>If the final study includes belief questions, they should be implemented sparingly and simply.</p>
+  <p>The most useful design lesson from Charness et al. (2021) is that more complex elicitation methods do not necessarily perform better in practice, and may instead reduce comprehension. For this reason:</p>
+  <ol>
+    <li>Belief elicitation should be limited to a few central questions.</li>
+    <li>If incentivized, it should use simple bonus rules rather than mathematically complex scoring rules.</li>
+    <li>Belief bonuses should be paid separately from in-game housing earnings to reduce hedging concerns.</li>
+  </ol>
+  <p>Candidate belief questions include:</p>
+  <ol>
+    <li>In which month do you expect to buy?</li>
+    <li>Do you expect your preferred home’s price to rise, fall, or stay similar next month?</li>
+    <li>What purchase-price range do you expect to end up paying?</li>
+  </ol>
+
+  <h2>9. Comprehension And Internal Validity</h2>
+  <p>The JEBO paper is especially useful here. Charness et al. (2021) argue that complexity can impair elicitation and recommend simpler presentation and understanding checks.</p>
+  <p>Accordingly, before Phase 2, participants should complete a short comprehension module covering:</p>
+  <ol>
+    <li>What happens when a month ends.</li>
+    <li>What happens if they wait.</li>
+    <li>What happens if they cannot afford a listing.</li>
+    <li>How rent affects their final payoff.</li>
+    <li>Whether skipping to month end still consumes time.</li>
+  </ol>
+
+  <h2>10. Identification Strategy</h2>
+  <p>The core identification strategy is randomized treatment assignment between RL pricing and baseline pricing.</p>
+  <p>Let <em>i</em> index participants, <em>T<sub>i</sub></em> indicate assignment to RL pricing, and <em>Y<sub>i</sub></em> denote an outcome of interest, such as purchase price, purchase timing, or final money. The main estimating equation can be written as:</p>
+  <div class="equation">Y_i = α + βT_i + γX_i + ε_i</div>
+  <p>where <em>X<sub>i</sub></em> may include pre-treatment controls such as:</p>
+  <ol>
+    <li>Average Phase 1 WTP.</li>
+    <li>Dispersion of WTP across properties.</li>
+    <li>Demographic covariates if collected.</li>
+  </ol>
+  <p>The coefficient of interest is <em>β</em>, which estimates the effect of RL pricing relative to baseline pricing.</p>
+
+  <h2>11. Empirical Analysis Plan</h2>
+  <h3>11.1 Main Comparisons</h3>
+  <ol>
+    <li>Compare purchase prices across treatment arms.</li>
+    <li>Compare purchase timing across treatment arms.</li>
+    <li>Compare no-purchase rates across treatment arms.</li>
+    <li>Compare realized seller revenue and participant surplus proxies across treatment arms.</li>
+  </ol>
+
+  <h3>11.2 Linking Phase 1 To Phase 2</h3>
+  <p>The paper should explicitly analyze whether Phase 1 valuations predict Phase 2 choices.</p>
+  <p>Useful specifications include:</p>
+  <ol>
+    <li>Probability of purchase as a function of own WTP rank for the property.</li>
+    <li>Purchase timing as a function of valuation dispersion.</li>
+    <li>Whether RL pricing induces more deviations from Phase 1 WTP benchmarks than the baseline.</li>
+  </ol>
+
+  <h3>11.3 Process Analysis Using Timeline Data</h3>
+  <p>The action timeline permits a stronger process section in the paper.</p>
+  <p>Examples:</p>
+  <ol>
+    <li>Time spent deliberating before purchase.</li>
+    <li>Whether RL pricing increases waiting and inspection behavior.</li>
+    <li>Whether participants in one treatment rely more heavily on skipping or passive countdown waiting.</li>
+    <li>Whether early purchase under RL pricing appears rushed or deliberate.</li>
+  </ol>
+
+  <h2>12. Threats To Interpretation</h2>
+  <h3>12.1 Complexity And Confusion</h3>
+  <p>Participants may misunderstand dynamic pricing, rent penalties, or timing rules. This is why comprehension checks are important and why the interface should remain simple.</p>
+
+  <h3>12.2 Elicitation Effects</h3>
+  <p>As reviewed by Charness et al. (2021), asking for beliefs or valuations can itself affect later behavior. The paper should therefore be careful not to overclaim that Phase 1 is a passive measurement step.</p>
+
+  <h3>12.3 Hedging</h3>
+  <p>If belief reports are incentivized using the same reward pool as purchase outcomes, participants may hedge. The paper should avoid this by separating belief bonuses from purchase payoffs whenever beliefs are paid.</p>
+
+  <h3>12.4 External Validity</h3>
+  <p>The environment is intentionally stylized. The contribution is not that the experiment perfectly reproduces the real housing market, but that it creates a controlled dynamic decision environment in which alternative pricing algorithms can be compared.</p>
+
+  <h2>13. Contribution</h2>
+  <ol>
+    <li><strong>Substantive contribution:</strong> The study evaluates whether RL-based pricing changes buyer behavior and market outcomes relative to a baseline.</li>
+    <li><strong>Methodological contribution:</strong> It separates stated valuations from dynamic revealed choices in a controlled market environment.</li>
+    <li><strong>Measurement contribution:</strong> It combines choice data with fine-grained action timelines, enabling process analysis of search, waiting, and purchase behavior.</li>
+  </ol>
+
+  <h2>14. Suggested Paper Structure</h2>
+  <ol>
+    <li>Introduction</li>
+    <li>Related literature on dynamic pricing, experimental housing choice, and belief elicitation</li>
+    <li>Experimental design</li>
+    <li>Data and measures</li>
+    <li>Main treatment effects</li>
+    <li>Process evidence from timeline data</li>
+    <li>Robustness and heterogeneity</li>
+    <li>Conclusion</li>
+  </ol>
+
+  <h2>15. Recommended Near-Term Implementation Priorities</h2>
+  <ol>
+    <li>Keep Phase 1 untimed and simple.</li>
+    <li>Add Phase 2 comprehension checks.</li>
+    <li>Preserve separate logging for both phases.</li>
+    <li>Keep month-based timing and enforced countdown on skip actions.</li>
+    <li>If beliefs are added, use simple and easily explained tasks with separate bonus payments.</li>
+  </ol>
+
+  <h2>References</h2>
+  <p class="ref">Charness, Gary, Uri Gneezy, and Vlastimil Rasocha. 2021. “Experimental methods: Eliciting beliefs.” <em>Journal of Economic Behavior &amp; Organization</em> 189: 234–256. https://doi.org/10.1016/j.jebo.2021.06.032</p>
+  <p class="ref">Project design source: <em>Experimental Design: Incentive-Compatible Market Simulation</em>, internal working document dated March 31, 2026.</p>
+</body>
+</html>
