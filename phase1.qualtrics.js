@@ -12,15 +12,6 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     qthis.hideNextButton();
   }
 
-  const FIREBASE_CONFIG = {
-    apiKey: "REDACTED_FIREBASE_WEB_API_KEY",
-    authDomain: "housing-experiment-mockups.firebaseapp.com",
-    projectId: "housing-experiment-mockups",
-    storageBucket: "housing-experiment-mockups.firebasestorage.app",
-    messagingSenderId: "420999777383",
-    appId: "1:420999777383:web:14919e023497fd762218c2"
-  };
-
   const RESPONSES_COLLECTION_PATH = "Responses";
   const ACTIONS_COLLECTION_PATH = "Action";
   const USER_ID_FIELD = "userId";
@@ -28,6 +19,7 @@ Qualtrics.SurveyEngine.addOnReady(function () {
   const PROPERTY_ITEMS_FIELD = "propertyItems";
   const TREATMENT_FIELD = "treatmentGroupId";
   const TREATMENT_ITEM_FIELD = "treatmentGroupItem";
+  const FIREBASE_CONFIG_FIELD = "firebaseConfig";
 
   const UI_COPY = {
     title: "Rate These Properties",
@@ -692,12 +684,50 @@ Qualtrics.SurveyEngine.addOnReady(function () {
         return loadScript(src);
       });
     }, Promise.resolve()).then(function () {
+      const firebaseConfig = getFirebaseConfig();
       if (!window.firebase.apps.length) {
-        window.firebase.initializeApp(FIREBASE_CONFIG);
+        window.firebase.initializeApp(firebaseConfig);
       }
 
       return window.firebase.firestore();
     });
+  }
+
+  function getFirebaseConfig() {
+    const raw = getEmbeddedDataValue(FIREBASE_CONFIG_FIELD);
+    if (!raw) {
+      throw new Error(
+        "Missing firebaseConfig embedded data. Add the Firebase web config JSON in Survey Flow."
+      );
+    }
+
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("firebaseConfig must be a single JSON object.");
+      }
+
+      const requiredKeys = [
+        "apiKey",
+        "authDomain",
+        "projectId",
+        "storageBucket",
+        "messagingSenderId",
+        "appId"
+      ];
+
+      requiredKeys.forEach(function (key) {
+        if (!parsed[key]) {
+          throw new Error("firebaseConfig is missing required key: " + key);
+        }
+      });
+
+      return parsed;
+    } catch (error) {
+      throw new Error(
+        "Invalid firebaseConfig embedded data. Check the Firebase web config JSON in Survey Flow."
+      );
+    }
   }
 
   function getEmbeddedDataValue(fieldName) {

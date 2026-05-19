@@ -53,6 +53,7 @@ The scripts expect the following Embedded Data fields.
 - `propertyItems`
 - `treatmentGroupId`
 - `treatmentGroupItem`
+- `firebaseConfig`
 
 ### Also used in Phase 2
 
@@ -94,6 +95,17 @@ The scripts expect the following Embedded Data fields.
 - `newListingRate`
 - `disappearByPropertyId`: object mapping each property ID to the month when it becomes unavailable
 
+### `firebaseConfig`
+
+`firebaseConfig` must be a single JSON object containing the Firebase web config used by the Qualtrics scripts:
+
+- `apiKey`
+- `authDomain`
+- `projectId`
+- `storageBucket`
+- `messagingSenderId`
+- `appId`
+
 ## How Qualtrics survey flow should be structured
 
 Recommended flow:
@@ -105,6 +117,7 @@ Recommended flow:
    - assign `treatmentGroupId`
    - assign `propertyItems`
    - assign `treatmentGroupItem`
+   - assign `firebaseConfig`
    - assign Phase 2 tuning values like `marketPressure`, `trendScale`, `month`, and `timePerMonth`
 3. Instructions / comprehension screen
 4. **Phase 1 question**
@@ -119,6 +132,8 @@ The game sits in the survey as two separate Qualtrics questions. Phase 1 writes 
 Project ID: `housing-experiment-mockups`
 
 This project writes to **Cloud Firestore**, not Realtime Database.
+
+The Qualtrics scripts do not store the Firebase web config in source. Instead, they read it from the `firebaseConfig` Embedded Data field at runtime.
 
 The code writes to these Firestore paths:
 
