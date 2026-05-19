@@ -21,32 +21,15 @@ The main behaviors captured are:
 
 ## Project files
 
-- `phase1.html`: HTML shell for the Phase 1 Qualtrics question
-- `phase1.qualtrics.js`: Phase 1 interface, valuation logic, and Firebase save logic
-- `phase2.html`: HTML shell for the Phase 2 Qualtrics question
-- `phase2.qualtrics.js`: Phase 2 market simulation, timing logic, and Firebase save logic
-- `research_design_doc.md`: research memo describing the experiment design
-- `scripts/extract_firebase_data.py`: exports raw session data from Firestore to JSON
-- `scripts/clean_firebase_data.py`: converts the raw export to an analysis-ready participant-level CSV
-- `sample_data/homestudy_market_clean_sample.csv`: example cleaned output with 5 rows
-- `requirements.txt`: Python dependencies for the data pipeline
-- `.env.example`: example environment configuration for Firebase credentials
+- `phase1.html` and `phase1.qualtrics.js`: Phase 1 valuation task
+- `phase2.html` and `phase2.qualtrics.js`: Phase 2 market simulation
+- `scripts/extract_firebase_data.py`: exports raw Firestore data to JSON
+- `scripts/clean_firebase_data.py`: converts the raw export to CSV
+- `sample_data/homestudy_market_clean_sample.csv`: example cleaned output
 
 ## How to run it locally
 
 This project is designed to run **inside Qualtrics**, not as a standalone web app. The `.html` files by themselves only provide the root container and page title.
-
-### Option 1: Quick local file preview
-
-Use this only to inspect the basic HTML shell.
-
-1. Open `phase1.html` or `phase2.html` in a browser.
-2. You will only see the page heading and the `#qualtrics-root` container.
-3. The full game will **not** run this way because the JavaScript depends on the Qualtrics runtime (`Qualtrics.SurveyEngine`) and survey embedded data.
-
-### Option 2: Real testing flow in Qualtrics
-
-Use this for actual testing.
 
 1. Create or open the Qualtrics survey for the study.
 2. Add one question for Phase 1 and one question for Phase 2.
@@ -83,7 +66,7 @@ The scripts expect the following Embedded Data fields.
 
 ### `propertyItems`
 
-`propertyItems` must be a JSON array. Each item should include enough information for display and pricing. Typical fields are:
+`propertyItems` must be a JSON array. Typical fields:
 
 - `propertyId` or `id`
 - `address`
@@ -100,7 +83,7 @@ The scripts expect the following Embedded Data fields.
 
 ### `treatmentGroupItem`
 
-`treatmentGroupItem` must be a single JSON object. It should include:
+`treatmentGroupItem` must be a single JSON object. Required fields:
 
 - `propertyIds`: ordered array of property IDs shown in the condition
 - `startingCash`
@@ -129,15 +112,13 @@ Recommended flow:
 6. **Phase 2 question**
 7. Post-task questions / demographics / debrief
 
-The game sits in the survey as two separate Qualtrics questions, with Phase 1 first and Phase 2 second. Phase 1 writes `phase1Ratings`, which Phase 2 then reads back from Embedded Data or Firebase.
+The game sits in the survey as two separate Qualtrics questions. Phase 1 writes `phase1Ratings`, and Phase 2 reads it back from Embedded Data or Firestore.
 
 ## How it connects to Firebase
 
-Both phases initialize the same Firebase project:
+Project ID: `housing-experiment-mockups`
 
-- Project ID: `housing-experiment-mockups`
-
-Although the assignment language refers to a Firebase real-time database, this game currently writes to **Cloud Firestore**.
+This project writes to **Cloud Firestore**, not Realtime Database.
 
 The code writes to these Firestore paths:
 
@@ -147,31 +128,16 @@ The code writes to these Firestore paths:
 - `Responses/{sessionId}/Action/Phase1`
 - `Responses/{sessionId}/Action/Phase2`
 
-Phase 1 saves:
-
-- participant metadata
-- WTP values for each property
-- open-house toggles
-- Phase 1 action timeline
-
-Phase 2 saves:
-
-- participant metadata
-- purchase outcome
-- final money, final month, and purchased property details in Embedded Data
-- Phase 2 action timeline
+Phase 1 saves ratings, open-house choices, metadata, and the Phase 1 action timeline. Phase 2 saves purchase outcome, money/month outcome fields, metadata, and the Phase 2 action timeline.
 
 ## Data extraction and cleaning
-
-This repository includes a two-step data pipeline for exporting and cleaning participant data from Firestore.
 
 ### Credentials and setup
 
 1. Create a local `.env` file in the project root.
 2. Copy the format from `.env.example`.
 3. Set `GOOGLE_APPLICATION_CREDENTIALS` to the absolute path of your Firebase service account JSON file.
-4. Set `FIREBASE_PROJECT_ID` to the Firestore project ID if you want to override the default client configuration.
-5. Install dependencies:
+4. Install dependencies:
 
 ```bash
 python3 -m pip install -r requirements.txt
@@ -187,14 +153,7 @@ Run:
 python3 scripts/extract_firebase_data.py --project-id housing-experiment-mockups --output data/raw/firestore_export.json
 ```
 
-This exports the `Responses` collection and its subcollections into a raw JSON snapshot. The export includes:
-
-- session ID
-- Firestore create and update timestamps
-- session metadata
-- Phase 1 ratings
-- Phase 1 and Phase 2 action timelines
-- Phase 2 purchase outcome
+This writes `data/raw/firestore_export.json`.
 
 ### Step 2: Clean the raw export into CSV
 
@@ -204,7 +163,7 @@ Run:
 python3 scripts/clean_firebase_data.py --input data/raw/firestore_export.json --output data/cleaned/homestudy_market_participants.csv
 ```
 
-This produces one row per participant session.
+This writes `data/cleaned/homestudy_market_participants.csv` with one row per participant session.
 
 Optional filters:
 
@@ -216,44 +175,29 @@ The allowlist file should contain one real participant ID per line.
 
 ### Output structure
 
-The cleaned CSV includes readable analysis columns such as:
+The cleaned CSV includes:
 
-- `session_id`
-- `user_id`
-- `treatment_group_id`
-- `phase1_property_count`
-- `phase1_completed_count`
-- `phase1_mean_wtp`
-- `phase1_open_house_count`
-- `phase2_purchased_flag`
-- `phase2_purchase_price`
-- `phase2_total_months`
-- `phase2_final_money`
-- action-count summaries from the Phase 2 timeline
-- missing-data flags
+- `session_id`, `user_id`, `treatment_group_id`
+- Phase 2 outcome columns such as purchase flag, purchased property, price, rent paid, total months, and final money
+- one `*_wtp` column and one `*_open_house` column for each property in the export
+- `phase1_actions_json`
+- `phase2_actions_json`
 
-### Test/dev filtering rules
+### Filtering
 
-By default, the cleaning script removes rows when:
+By default, the cleaning script keeps every session in the raw export. Optional filters:
 
-- the `user_id` or `session_id` contains obvious development markers such as `test`, `dev`, `debug`, `pilot`, `demo`, `practice`, `preview`, or `sandbox`
-- the session has neither Phase 1 ratings nor Phase 2 timeline data
+- a newline-delimited allowlist of participant IDs with `--allowed-user-id-file`
+- a minimum record timestamp with `--min-created-at`
+- a maximum record timestamp with `--max-created-at`
 
-For stricter filtering, pass an allowlist of real participant IDs with `--allowed-user-id-file`.
+### Missing values
 
-### Missing-value handling
+The cleaning script does not impute missing values. Missing values are left blank in the CSV.
 
-The cleaning script does **not** impute missing values.
+### Sample output
 
-- Missing numeric outcome values are left blank in the CSV.
-- Missing Phase 1 or Phase 2 sections are flagged with `missing_phase1_ratings_flag` and `missing_phase2_outcome_flag`.
-- Rows are preserved unless they match the test/dev filters above or a caller-provided allowlist/date filter excludes them.
-
-### Sample cleaned output
-
-A 5-row example cleaned CSV is included here:
-
-- `sample_data/homestudy_market_clean_sample.csv`
+Example file: `sample_data/homestudy_market_clean_sample.csv`
 
 ## Known bugs, limitations, or unfinished pieces
 

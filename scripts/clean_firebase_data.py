@@ -7,21 +7,24 @@ import argparse
 import csv
 import json
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
-from statistics import mean
 from typing import Any
 
-
-TEST_PATTERN = re.compile(
-    r"(test|dev|debug|pilot|demo|practice|preview|sandbox)",
-    re.IGNORECASE,
-)
+PROTO_TIMESTAMP_PATTERN = re.compile(r"seconds:\s*(\d+)\s+nanos:\s*(\d+)", re.MULTILINE)
 
 
 def parse_iso_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
+
+    proto_match = PROTO_TIMESTAMP_PATTERN.search(value)
+    if proto_match:
+        seconds = int(proto_match.group(1))
+        nanos = int(proto_match.group(2))
+        total_seconds = float(seconds) + (float(nanos) / 1_000_000_000)
+        return datetime.fromtimestamp(total_seconds, tz=UTC)
+
     normalized = value.replace("Z", "+00:00")
     try:
         return datetime.fromisoformat(normalized)
@@ -29,7 +32,18 @@ def parse_iso_datetime(value: str | None) -> datetime | None:
         return None
 
 
+def normalize_timestamp_string(value: str | None) -> str:
+    parsed = parse_iso_datetime(value)
+    if parsed is None:
+        return value or ""
+    return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
 def load_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Raw export file not found: {path}. Run scripts/extract_firebase_data.py first."
+        )
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -51,14 +65,6 @@ def safe_number(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
-
-
-def count_actions(timeline: list[dict[str, Any]], action_type: str) -> int:
-    return sum(1 for item in timeline if item.get("actionType") == action_type)
-
-
-def count_thinking_segments(timeline: list[dict[str, Any]]) -> int:
-    return sum(1 for item in timeline if item.get("actionType") == "thinking")
 
 
 def get_subdoc(session: dict[str, Any], subcollection: str, document_id: str) -> dict[str, Any]:
@@ -92,6 +98,25 @@ def get_purchase_outcome(session: dict[str, Any]) -> dict[str, Any]:
     return get_subdoc(session, "Purchases", "Outcome")
 
 
+def get_all_property_ids(sessions: list[dict[str, Any]]) -> list[str]:
+    property_ids = set()
+    for session in sessions:
+        property_ids.update(get_ratings(session).keys())
+    return sorted(property_ids)
+
+
+def bool_to_csv_value(value: Any) -> str:
+    if value is True:
+        return "TRUE"
+    if value is False:
+        return "FALSE"
+    return ""
+
+
+def serialize_timeline(timeline: list[dict[str, Any]]) -> str:
+    return json.dumps(timeline, separators=(",", ":"), ensure_ascii=True)
+
+
 def should_drop_session(
     row: dict[str, Any],
     allowed_user_ids: set[str] | None,
@@ -99,14 +124,9 @@ def should_drop_session(
     max_created_at: datetime | None,
 ) -> bool:
     user_id = str(row.get("user_id") or "").strip()
-    session_id = str(row.get("session_id") or "").strip()
     created_at = parse_iso_datetime(row.get("record_created_at"))
 
     if allowed_user_ids is not None and user_id not in allowed_user_ids:
-        return True
-
-    combined = " ".join([user_id, session_id])
-    if TEST_PATTERN.search(combined):
         return True
 
     if min_created_at and created_at and created_at < min_created_at:
@@ -115,25 +135,15 @@ def should_drop_session(
     if max_created_at and created_at and created_at > max_created_at:
         return True
 
-    if not row.get("phase1_property_count") and not row.get("phase2_timeline_event_count"):
-        return True
-
     return False
 
 
-def summarize_session(session: dict[str, Any]) -> dict[str, Any]:
+def summarize_session(session: dict[str, Any], property_ids: list[str]) -> dict[str, Any]:
     metadata = get_session_metadata(session)
     ratings = get_ratings(session)
     phase1_timeline = get_timeline(session, "Phase1")
     phase2_timeline = get_timeline(session, "Phase2")
     outcome = get_purchase_outcome(session)
-
-    wtp_values = [
-        safe_number(rating.get("wtp"))
-        for rating in ratings.values()
-        if safe_number(rating.get("wtp")) is not None
-    ]
-    open_house_count = sum(1 for rating in ratings.values() if bool(rating.get("openHouse")))
 
     purchase_price = safe_number(outcome.get("price"))
     rent_paid = safe_number(outcome.get("rentPaid"))
@@ -145,16 +155,8 @@ def summarize_session(session: dict[str, Any]) -> dict[str, Any]:
         "session_id": session.get("session_id", ""),
         "user_id": metadata.get("userId", ""),
         "treatment_group_id": metadata.get("treatmentGroupId", ""),
-        "record_created_at": session.get("create_time", ""),
-        "record_updated_at": session.get("update_time", ""),
-        "phase1_property_count": len(ratings),
-        "phase1_completed_count": len(wtp_values),
-        "phase1_mean_wtp": round(mean(wtp_values), 2) if wtp_values else "",
-        "phase1_min_wtp": min(wtp_values) if wtp_values else "",
-        "phase1_max_wtp": max(wtp_values) if wtp_values else "",
-        "phase1_open_house_count": open_house_count,
-        "phase1_timeline_event_count": len(phase1_timeline),
-        "phase1_thinking_segment_count": count_thinking_segments(phase1_timeline),
+        "record_created_at": normalize_timestamp_string(session.get("create_time")),
+        "record_updated_at": normalize_timestamp_string(session.get("update_time")),
         "phase2_purchased_flag": int(bool(outcome.get("propertyId"))),
         "phase2_purchased_property_id": outcome.get("propertyId", ""),
         "phase2_purchased_address": outcome.get("address", ""),
@@ -163,21 +165,20 @@ def summarize_session(session: dict[str, Any]) -> dict[str, Any]:
         "phase2_total_months": int(total_months) if total_months is not None else "",
         "phase2_final_money": final_money if final_money is not None else "",
         "phase2_final_month": int(final_month) if final_month is not None else "",
-        "phase2_timeline_event_count": len(phase2_timeline),
-        "phase2_thinking_segment_count": count_thinking_segments(phase2_timeline),
-        "phase2_select_property_count": count_actions(phase2_timeline, "select_property"),
-        "phase2_open_wallet_count": count_actions(phase2_timeline, "open_wallet"),
-        "phase2_buy_attempt_count": count_actions(phase2_timeline, "buy_property"),
-        "phase2_skip_month_count": count_actions(phase2_timeline, "skip_month"),
-        "phase2_advance_month_count": count_actions(phase2_timeline, "advance_month"),
-        "phase2_countdown_complete_count": count_actions(phase2_timeline, "countdown_complete"),
-        "missing_phase1_ratings_flag": int(len(ratings) == 0),
-        "missing_phase2_outcome_flag": int(len(outcome) == 0),
+        "phase1_actions_json": serialize_timeline(phase1_timeline),
+        "phase2_actions_json": serialize_timeline(phase2_timeline),
     }
+
+    for property_id in property_ids:
+        rating = ratings.get(property_id, {})
+        wtp_value = safe_number(rating.get("wtp"))
+        row[f"{property_id}_wtp"] = wtp_value if wtp_value is not None else ""
+        row[f"{property_id}_open_house"] = bool_to_csv_value(rating.get("openHouse"))
+
     return row
 
 
-def write_csv(rows: list[dict[str, Any]], output_path: Path) -> None:
+def write_csv(rows: list[dict[str, Any]], property_ids: list[str], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
         "session_id",
@@ -185,14 +186,6 @@ def write_csv(rows: list[dict[str, Any]], output_path: Path) -> None:
         "treatment_group_id",
         "record_created_at",
         "record_updated_at",
-        "phase1_property_count",
-        "phase1_completed_count",
-        "phase1_mean_wtp",
-        "phase1_min_wtp",
-        "phase1_max_wtp",
-        "phase1_open_house_count",
-        "phase1_timeline_event_count",
-        "phase1_thinking_segment_count",
         "phase2_purchased_flag",
         "phase2_purchased_property_id",
         "phase2_purchased_address",
@@ -201,17 +194,14 @@ def write_csv(rows: list[dict[str, Any]], output_path: Path) -> None:
         "phase2_total_months",
         "phase2_final_money",
         "phase2_final_month",
-        "phase2_timeline_event_count",
-        "phase2_thinking_segment_count",
-        "phase2_select_property_count",
-        "phase2_open_wallet_count",
-        "phase2_buy_attempt_count",
-        "phase2_skip_month_count",
-        "phase2_advance_month_count",
-        "phase2_countdown_complete_count",
-        "missing_phase1_ratings_flag",
-        "missing_phase2_outcome_flag",
     ]
+    for property_id in property_ids:
+        fieldnames.append(f"{property_id}_wtp")
+        fieldnames.append(f"{property_id}_open_house")
+    fieldnames.extend([
+        "phase1_actions_json",
+        "phase2_actions_json",
+    ])
 
     with output_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -263,16 +253,17 @@ def main() -> None:
 
     payload = load_json(raw_path)
     sessions = payload.get("sessions", [])
+    property_ids = get_all_property_ids(sessions)
 
     rows = []
     for session in sessions:
-        row = summarize_session(session)
+        row = summarize_session(session, property_ids)
         if should_drop_session(row, allowed_ids, min_created_at, max_created_at):
             continue
         rows.append(row)
 
     rows.sort(key=lambda row: (str(row["user_id"]), str(row["session_id"])))
-    write_csv(rows, output_path)
+    write_csv(rows, property_ids, output_path)
     print(f"Wrote {len(rows)} cleaned rows to {output_path}")
 
 

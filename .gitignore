@@ -1,6 +1,8 @@
 .DS_Store
 .env
+.venv/
 __pycache__/
 *.pyc
 data/raw/
 data/cleaned/
+housing-experiment-mockups-firebase-adminsdk-fbsvc-5c1ee8959d.json

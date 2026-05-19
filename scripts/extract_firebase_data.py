@@ -9,8 +9,13 @@ This project stores participant records in Cloud Firestore under:
     Responses/{sessionId}/Action/Phase2
     Responses/{sessionId}/Purchases/Outcome
 
-The script recursively exports each session document and its subcollections so
-that the cleaning step can run from a stable raw snapshot.
+Important implementation detail:
+the game writes directly to subcollections, but it does not write fields to the
+parent `Responses/{sessionId}` document. In Firestore, that means listing the
+top-level `Responses` collection returns zero documents even though the nested
+subcollections contain real data. For that reason, this exporter reconstructs
+sessions from collection-group queries instead of streaming the top-level
+collection.
 """
 
 from __future__ import annotations
@@ -18,12 +23,18 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
 from google.cloud import firestore
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
+PROTO_TIMESTAMP_PATTERN = re.compile(r"seconds:\s*(\d+)\s+nanos:\s*(\d+)", re.MULTILINE)
 
 
 def timestamp_to_iso(value: Any) -> str | None:
@@ -36,7 +47,19 @@ def timestamp_to_iso(value: Any) -> str | None:
         except ValueError:
             return value.isoformat()
 
-    return str(value)
+    if hasattr(value, "seconds") and hasattr(value, "nanos"):
+        total_seconds = float(value.seconds) + (float(value.nanos) / 1_000_000_000)
+        return datetime.fromtimestamp(total_seconds, tz=UTC).isoformat().replace("+00:00", "Z")
+
+    text_value = str(value)
+    match = PROTO_TIMESTAMP_PATTERN.search(text_value)
+    if match:
+        seconds = int(match.group(1))
+        nanos = int(match.group(2))
+        total_seconds = float(seconds) + (float(nanos) / 1_000_000_000)
+        return datetime.fromtimestamp(total_seconds, tz=UTC).isoformat().replace("+00:00", "Z")
+
+    return text_value
 
 
 def convert_value(value: Any) -> Any:
@@ -50,30 +73,68 @@ def convert_value(value: Any) -> Any:
 
 
 def export_document(doc_snapshot: firestore.DocumentSnapshot) -> dict[str, Any]:
-    document_payload: dict[str, Any] = {
+    return {
         "document_id": doc_snapshot.id,
         "fields": convert_value(doc_snapshot.to_dict() or {}),
         "create_time": timestamp_to_iso(doc_snapshot.create_time),
         "update_time": timestamp_to_iso(doc_snapshot.update_time),
-        "subcollections": {},
     }
 
-    for subcollection in doc_snapshot.reference.collections():
-        sub_docs: dict[str, Any] = {}
-        for child_snapshot in subcollection.stream():
-            sub_docs[child_snapshot.id] = export_document(child_snapshot)
-        document_payload["subcollections"][subcollection.id] = sub_docs
 
-    return document_payload
+def parse_session_path(doc_snapshot: firestore.DocumentSnapshot, root_collection: str) -> tuple[str, str]:
+    path_parts = doc_snapshot.reference.path.split("/")
+    if len(path_parts) < 4 or path_parts[0] != root_collection:
+        raise ValueError(
+            f"Unexpected document path {doc_snapshot.reference.path}; expected "
+            f"{root_collection}/{{sessionId}}/{{subcollection}}/{{documentId}}"
+        )
+
+    return path_parts[1], path_parts[2]
 
 
-def export_sessions(db: firestore.Client, collection_name: str) -> list[dict[str, Any]]:
-    sessions: list[dict[str, Any]] = []
-    for session_snapshot in db.collection(collection_name).stream():
-        session_record = export_document(session_snapshot)
-        session_record["session_id"] = session_snapshot.id
-        sessions.append(session_record)
+def ensure_session_record(session_map: dict[str, dict[str, Any]], session_id: str) -> dict[str, Any]:
+    session_record = session_map.setdefault(
+        session_id,
+        {
+            "session_id": session_id,
+            "document_id": session_id,
+            "create_time": None,
+            "update_time": None,
+            "fields": {},
+            "subcollections": {},
+        },
+    )
+    return session_record
 
+
+def update_session_timestamps(session_record: dict[str, Any], doc_payload: dict[str, Any]) -> None:
+    create_time = doc_payload.get("create_time")
+    update_time = doc_payload.get("update_time")
+
+    if create_time and (session_record["create_time"] is None or create_time < session_record["create_time"]):
+        session_record["create_time"] = create_time
+
+    if update_time and (session_record["update_time"] is None or update_time > session_record["update_time"]):
+        session_record["update_time"] = update_time
+
+
+def export_sessions(db: firestore.Client, root_collection: str) -> list[dict[str, Any]]:
+    session_map: dict[str, dict[str, Any]] = {}
+
+    for subcollection_name in ("MetaData", "Ratings", "Action", "Purchases"):
+        for doc_snapshot in db.collection_group(subcollection_name).stream():
+            session_id, parsed_subcollection_name = parse_session_path(doc_snapshot, root_collection)
+            session_record = ensure_session_record(session_map, session_id)
+            doc_payload = export_document(doc_snapshot)
+            update_session_timestamps(session_record, doc_payload)
+
+            session_record["subcollections"].setdefault(parsed_subcollection_name, {})
+            session_record["subcollections"][parsed_subcollection_name][doc_snapshot.id] = doc_payload
+
+            if parsed_subcollection_name == "MetaData" and doc_snapshot.id == "Session":
+                session_record["fields"] = dict(doc_payload.get("fields", {}))
+
+    sessions = list(session_map.values())
     sessions.sort(key=lambda record: record["session_id"])
     return sessions
 
@@ -101,12 +162,25 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    load_dotenv()
+    load_dotenv(DEFAULT_ENV_PATH)
     parser = build_parser()
     args = parser.parse_args()
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    if not credentials_path:
+        raise SystemExit(
+            "Missing GOOGLE_APPLICATION_CREDENTIALS. Add it to .env and point it to "
+            "your Firebase service-account JSON file."
+        )
+
+    if not Path(credentials_path).expanduser().exists():
+        raise SystemExit(
+            "The service-account file was not found at "
+            f"{credentials_path}. Update GOOGLE_APPLICATION_CREDENTIALS in .env."
+        )
 
     db = firestore.Client(project=args.project_id)
     sessions = export_sessions(db, args.collection)
