@@ -26,6 +26,11 @@ The main behaviors captured are:
 - `phase2.html`: HTML shell for the Phase 2 Qualtrics question
 - `phase2.qualtrics.js`: Phase 2 market simulation, timing logic, and Firebase save logic
 - `research_design_doc.md`: research memo describing the experiment design
+- `scripts/extract_firebase_data.py`: exports raw session data from Firestore to JSON
+- `scripts/clean_firebase_data.py`: converts the raw export to an analysis-ready participant-level CSV
+- `sample_data/homestudy_market_clean_sample.csv`: example cleaned output with 5 rows
+- `requirements.txt`: Python dependencies for the data pipeline
+- `.env.example`: example environment configuration for Firebase credentials
 
 ## How to run it locally
 
@@ -132,13 +137,15 @@ Both phases initialize the same Firebase project:
 
 - Project ID: `housing-experiment-mockups`
 
+Although the assignment language refers to a Firebase real-time database, this game currently writes to **Cloud Firestore**.
+
 The code writes to these Firestore paths:
 
 - `Responses/{sessionId}/MetaData/Session`
 - `Responses/{sessionId}/Ratings/{propertyId}` for Phase 1 WTP data
-- `Responses/{sessionId}/Purchases/Purchase` for the final Phase 2 purchase outcome
-- `Action/{sessionId}/Timeline/Phase1`
-- `Action/{sessionId}/Timeline/Phase2`
+- `Responses/{sessionId}/Purchases/Outcome` for the final Phase 2 purchase outcome
+- `Responses/{sessionId}/Action/Phase1`
+- `Responses/{sessionId}/Action/Phase2`
 
 Phase 1 saves:
 
@@ -153,6 +160,100 @@ Phase 2 saves:
 - purchase outcome
 - final money, final month, and purchased property details in Embedded Data
 - Phase 2 action timeline
+
+## Data extraction and cleaning
+
+This repository includes a two-step data pipeline for exporting and cleaning participant data from Firestore.
+
+### Credentials and setup
+
+1. Create a local `.env` file in the project root.
+2. Copy the format from `.env.example`.
+3. Set `GOOGLE_APPLICATION_CREDENTIALS` to the absolute path of your Firebase service account JSON file.
+4. Set `FIREBASE_PROJECT_ID` to the Firestore project ID if you want to override the default client configuration.
+5. Install dependencies:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+The `.env` file is ignored by git and should never be committed.
+
+### Step 1: Export raw Firebase data
+
+Run:
+
+```bash
+python3 scripts/extract_firebase_data.py --project-id housing-experiment-mockups --output data/raw/firestore_export.json
+```
+
+This exports the `Responses` collection and its subcollections into a raw JSON snapshot. The export includes:
+
+- session ID
+- Firestore create and update timestamps
+- session metadata
+- Phase 1 ratings
+- Phase 1 and Phase 2 action timelines
+- Phase 2 purchase outcome
+
+### Step 2: Clean the raw export into CSV
+
+Run:
+
+```bash
+python3 scripts/clean_firebase_data.py --input data/raw/firestore_export.json --output data/cleaned/homestudy_market_participants.csv
+```
+
+This produces one row per participant session.
+
+Optional filters:
+
+- `--allowed-user-id-file path/to/real_ids.txt`
+- `--min-created-at 2026-05-01T00:00:00Z`
+- `--max-created-at 2026-05-31T23:59:59Z`
+
+The allowlist file should contain one real participant ID per line.
+
+### Output structure
+
+The cleaned CSV includes readable analysis columns such as:
+
+- `session_id`
+- `user_id`
+- `treatment_group_id`
+- `phase1_property_count`
+- `phase1_completed_count`
+- `phase1_mean_wtp`
+- `phase1_open_house_count`
+- `phase2_purchased_flag`
+- `phase2_purchase_price`
+- `phase2_total_months`
+- `phase2_final_money`
+- action-count summaries from the Phase 2 timeline
+- missing-data flags
+
+### Test/dev filtering rules
+
+By default, the cleaning script removes rows when:
+
+- the `user_id` or `session_id` contains obvious development markers such as `test`, `dev`, `debug`, `pilot`, `demo`, `practice`, `preview`, or `sandbox`
+- the session has neither Phase 1 ratings nor Phase 2 timeline data
+
+For stricter filtering, pass an allowlist of real participant IDs with `--allowed-user-id-file`.
+
+### Missing-value handling
+
+The cleaning script does **not** impute missing values.
+
+- Missing numeric outcome values are left blank in the CSV.
+- Missing Phase 1 or Phase 2 sections are flagged with `missing_phase1_ratings_flag` and `missing_phase2_outcome_flag`.
+- Rows are preserved unless they match the test/dev filters above or a caller-provided allowlist/date filter excludes them.
+
+### Sample cleaned output
+
+A 5-row example cleaned CSV is included here:
+
+- `sample_data/homestudy_market_clean_sample.csv`
 
 ## Known bugs, limitations, or unfinished pieces
 
