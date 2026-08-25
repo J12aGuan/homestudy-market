@@ -1,0 +1,63 @@
+<div style="max-width:680px; margin:0 auto; font-family:'Avenir Next','Segoe UI','Helvetica Neue',Arial,sans-serif; color:#17213a; background:#ffffff; border:1px solid #dde4f0; border-radius:18px; padding:0; overflow:hidden;">
+  <div style="background:#0f1f3d; padding:32px 28px; color:white; text-align:center;">
+    <div style="width:44px; height:44px; border-radius:12px; background:#2451b7; color:white; display:inline-block; line-height:44px; font-size:20px; font-weight:800; margin-bottom:14px;">
+      H
+    </div>
+    <h1 style="font-size:28px; font-weight:800; margin:0 0 8px 0;">
+      Welcome to HomeStudy Market
+    </h1>
+    <p style="color:rgba(255,255,255,0.82); font-size:15px; margin:0; line-height:1.45;">
+      A Decision-Making &amp; Real Estate Evaluation Simulation
+    </p>
+  </div>
+  <div style="padding:34px 32px; background:#ffffff;">
+    <p style="font-size:17px; line-height:1.65; color:#43506d; margin-top:0; margin-bottom:28px;">
+      Thank you for agreeing to participate in this study. In this session, you will explore a simulated digital housing task designed to evaluate how individuals process details, weigh value preferences, and make choices under changing conditions.
+      <br><br>
+      Before we begin initialization and review the task setup, please enter your assigned identification code below.
+    </p>
+    <div style="background:#f8fbff; border:1px solid #cfddf7; border-radius:14px; padding:22px; margin-bottom:24px;">
+      <label for="userIdInput" style="display:block; font-weight:700; font-size:16px; color:#0f1f3d; margin-bottom:10px;">
+        Please input your ID:
+      </label>
+      <input
+        id="userIdInput"
+        name="userIdInput"
+        type="text"
+        autocomplete="off"
+        placeholder="Enter ID here..."
+        style="width:100%; max-width:340px; padding:12px 14px; font-size:16px; border:2px solid #cfddf7; border-radius:8px; color:#17213a; background-color:#ffffff; box-sizing:border-box;"
+      />
+      <div id="userIdError" style="display:none; color:#b00020; margin-top:10px; font-weight:600; font-size:14px;">
+        ⚠️ Please enter your ID before continuing.
+      </div>
+    </div>
+    <div id="eligibilitySection" style="background:#f8fbff; border:1px solid #cfddf7; border-radius:14px; padding:22px; margin-bottom:24px;">
+      <label style="display:block; font-weight:700; font-size:16px; color:#0f1f3d; margin-bottom:6px;">
+        Have you purchased a residential property (such as a house or apartment/condominium) before, or are you currently in the process of purchasing one?
+      </label>
+      <div style="display:flex; gap:12px; margin-top:14px; flex-wrap:wrap;">
+        <button
+          type="button"
+          data-eligibility="1"
+          style="flex:1; min-width:120px; padding:12px 18px; font-size:16px; font-weight:700; font-family:inherit; border:2px solid #cfddf7; border-radius:8px; color:#17213a; background-color:#ffffff; cursor:pointer;"
+        >
+          Yes
+        </button>
+        <button
+          type="button"
+          data-eligibility="0"
+          style="flex:1; min-width:120px; padding:12px 18px; font-size:16px; font-weight:700; font-family:inherit; border:2px solid #cfddf7; border-radius:8px; color:#17213a; background-color:#ffffff; cursor:pointer;"
+        >
+          No
+        </button>
+      </div>
+      <div id="eligibilityError" style="display:none; color:#b00020; margin-top:10px; font-weight:600; font-size:14px;">
+        ⚠️ Please answer this question before continuing.
+      </div>
+    </div>
+    <div style="text-align:center; border-top:1px solid #ebf0f7; padding-top:22px; font-size:15px; color:#5a6480; font-weight:600;">
+      Please enter your participant ID code to unlock the validation setup.
+    </div>
+  </div>
+</div>
