@@ -12,14 +12,77 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     qthis.hideNextButton();
   }
 
+  function expandQualtricsViewport() {
+    const ancestors = [];
+    let node = questionContainer;
+    let depth = 0;
+
+    while (node && node !== document.body && depth < 8) {
+      ancestors.push(node);
+      node = node.parentElement;
+      depth += 1;
+    }
+
+    ancestors.forEach(function (el) {
+      el.style.maxWidth = "100%";
+      el.style.width = "100%";
+      el.style.overflow = "visible";
+      el.style.boxSizing = "border-box";
+    });
+
+    root.style.width = "100%";
+    root.style.maxWidth = "100%";
+    root.style.marginLeft = "0";
+    root.style.marginRight = "0";
+  }
+
+  expandQualtricsViewport();
+
   const RESPONSES_COLLECTION_PATH = "Responses";
   const ACTIONS_COLLECTION_PATH = "Action";
   const USER_ID_FIELD = "userId";
   const SESSION_ID_FIELD = "sessionId";
   const PROPERTY_ITEMS_FIELD = "propertyItems";
   const TREATMENT_FIELD = "treatmentGroupId";
-  const TREATMENT_ITEM_FIELD = "treatmentGroupItem";
   const FIREBASE_CONFIG_FIELD = "firebaseConfig";
+
+  // Housing profile answers collected on the setup page (spec Q2-Q4).
+  const MARKET_TYPE_CODE_FIELD = "market_type_code";
+  const MARKET_TYPE_LABEL_FIELD = "market_type_label";
+  const IDEAL_BEDROOMS_FIELD = "ideal_bedrooms";
+  const IDEAL_BATHROOMS_FIELD = "ideal_bathrooms";
+  const SELF_REPORTED_PRICE_FIELD = "self_reported_price";
+
+  // House assignment (spec section 2): four unique houses from the
+  // respondent's market type, bed/bath within +-1 of the ideal, nearest in
+  // underlying price to self_reported_price, shown in random order. The
+  // realized assignment (and the randomly sampled display attributes from
+  // spec section 3) is persisted here so a page reload keeps the same houses.
+  const ASSIGNMENT_FIELD = "phase1Assignment";
+  const ASSIGNED_PROPERTY_COUNT = 4;
+
+  // Randomly sampled display attributes (spec section 3).
+  const WALKABILITY_LEVELS = [
+    "Daily errands do not require a car.",
+    "Most errands can be accomplished on foot.",
+    "Some errands can be accomplished on foot.",
+    "Most errands require a car.",
+    "Almost all errands require a car."
+  ];
+  const TRANSIT_LEVELS = [
+    "World-class public transportation.",
+    "Transit is convenient for most trips.",
+    "Many nearby public transportation options.",
+    "A few nearby public transportation options.",
+    "It is possible to get on a bus."
+  ];
+  const COST_OF_LIVING_LEVELS = [
+    "Comfortable relative to median income in the area",
+    "Challenging relative to median income in the area"
+  ];
+  const SCHOOL_RATINGS = ["Excellent", "Great", "Good", "Needs Improvement"];
+  const PROPERTY_TYPES_URBAN_METRO = ["Single Family House", "Townhouse", "Condo", "Apartment"];
+  const PROPERTY_TYPES_OTHER = ["Single Family House", "Townhouse", "Condo"];
 
   const UI_COPY = {
     title: "Rate These Properties",
@@ -37,6 +100,7 @@ Qualtrics.SurveyEngine.addOnReady(function () {
   ];
 
   let loadedProperties = [];
+  let respondentProfile = null;
   let runtimeResponses = [];
   let saveInFlight = false;
   let saveErrorMessage = "";
@@ -52,7 +116,7 @@ Qualtrics.SurveyEngine.addOnReady(function () {
       color: #1a1a2e;
       background: #f6f7fb;
       min-height: 100vh;
-      margin: 0 -12px;
+      box-sizing: border-box;
       padding-bottom: 40px;
     }
 
@@ -299,9 +363,40 @@ Qualtrics.SurveyEngine.addOnReady(function () {
 
     .hs-card-grid {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 22px;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 18px;
       align-items: stretch;
+    }
+
+    .hs-market-banner {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: #eef4ff;
+      border: 1px solid #c8d8ff;
+      color: #27417a;
+      border-radius: 10px;
+      padding: 8px 14px;
+      font-size: 13px;
+      font-weight: 700;
+      margin: 8px 0 2px 0;
+    }
+
+    .hs-wtp-explainer {
+      background: #f4f9ff;
+      border: 1px solid #c8d8ff;
+      border-radius: 12px;
+      padding: 12px 14px;
+      font-size: 13px;
+      color: #27417a;
+      line-height: 1.5;
+      margin: 10px 0 2px 0;
+    }
+
+    @media (max-width: 1280px) {
+      .hs-card-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
     }
 
     .hs-complete-panel {
@@ -941,6 +1036,154 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     return shapePropertyData(doc.data() || {}, doc.id, index);
   }
 
+  function readRespondentProfile() {
+    const code = getEmbeddedDataValue(MARKET_TYPE_CODE_FIELD);
+    const label = getEmbeddedDataValue(MARKET_TYPE_LABEL_FIELD);
+    const bedroomsRaw = getEmbeddedDataValue(IDEAL_BEDROOMS_FIELD);
+    const bathroomsRaw = getEmbeddedDataValue(IDEAL_BATHROOMS_FIELD);
+    const priceRaw = getEmbeddedDataValue(SELF_REPORTED_PRICE_FIELD);
+
+    const bedrooms = bedroomsRaw ? Number(bedroomsRaw) : NaN;
+    const bathrooms = bathroomsRaw ? Number(bathroomsRaw) : NaN;
+    const price = priceRaw ? Number(priceRaw) : NaN;
+
+    if (!code ||
+      !Number.isFinite(bedrooms) ||
+      !Number.isFinite(bathrooms) ||
+      !Number.isFinite(price) ||
+      price <= 0) {
+      throw new Error(
+        "Missing housing profile answers (market type, ideal bedrooms/bathrooms, or price). " +
+        "The housing profile question must be completed before Phase 1."
+      );
+    }
+
+    return {
+      code: String(code),
+      label: label || "",
+      bedrooms: bedrooms,
+      bathrooms: bathrooms,
+      price: price
+    };
+  }
+
+  function getPropertyId(item, index) {
+    return String(item.propertyId || item.id || ("property-" + (index + 1)));
+  }
+
+  function getPropertyPrice(item) {
+    const value = Number(item.price || item.phase2Price || item.askPrice);
+    return Number.isFinite(value) && value > 0 ? value : null;
+  }
+
+  function shuffleInPlace(list) {
+    for (let i = list.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const swap = list[i];
+      list[i] = list[j];
+      list[j] = swap;
+    }
+    return list;
+  }
+
+  function sampleFrom(list) {
+    return list[Math.floor(Math.random() * list.length)];
+  }
+
+  function sampleAroundIdeal(ideal) {
+    const delta = Math.floor(Math.random() * 3) - 1;
+    return Math.max(1, ideal + delta);
+  }
+
+  function roomCountWithinOne(value, ideal) {
+    if (value === undefined || value === null || value === "") return true;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.abs(parsed - ideal) <= 1 : true;
+  }
+
+  // Spec section 3: every display attribute is randomly sampled per
+  // respondent. Type 2 (suburban/metropolitan) shows a transit score;
+  // all other market types show a walkability score.
+  function generateDisplayAttributes(profile) {
+    const usesTransit = profile.code === "2";
+    const usesApartments = profile.code === "1" || profile.code === "2";
+    return {
+      walkTransitType: usesTransit ? "transit" : "walkability",
+      walkTransitText: sampleFrom(usesTransit ? TRANSIT_LEVELS : WALKABILITY_LEVELS),
+      costOfLiving: sampleFrom(COST_OF_LIVING_LEVELS),
+      schoolRating: sampleFrom(SCHOOL_RATINGS),
+      beds: sampleAroundIdeal(profile.bedrooms),
+      baths: sampleAroundIdeal(profile.bathrooms),
+      propertyType: sampleFrom(usesApartments ? PROPERTY_TYPES_URBAN_METRO : PROPERTY_TYPES_OTHER)
+    };
+  }
+
+  // Spec section 2: candidate pool = same market type, bed/bath within +-1
+  // of the ideal, then the four houses nearest in underlying price to
+  // self_reported_price, shown in random order. If the strict pool has
+  // fewer than four houses, the bed/bath filter is relaxed (recorded via
+  // relaxedRoomFilter) rather than failing the survey.
+  function assignProperties(items, profile) {
+    const candidates = [];
+    items.forEach(function (item, index) {
+      const price = getPropertyPrice(item);
+      const marketCode = String(item.marketTypeCode || item.market_type_code || "");
+      if (price === null || marketCode !== profile.code) return;
+      candidates.push({item: item, id: getPropertyId(item, index), price: price});
+    });
+
+    const strictPool = candidates.filter(function (entry) {
+      return roomCountWithinOne(entry.item.beds, profile.bedrooms) &&
+        roomCountWithinOne(entry.item.baths, profile.bathrooms);
+    });
+
+    const relaxed = strictPool.length < ASSIGNED_PROPERTY_COUNT;
+    const pool = relaxed ? candidates : strictPool;
+
+    if (pool.length < ASSIGNED_PROPERTY_COUNT) {
+      throw new Error(
+        "Only " + pool.length + " properties are available for market type " + profile.code +
+        ". propertyItems needs at least " + ASSIGNED_PROPERTY_COUNT + " properties per market type."
+      );
+    }
+
+    shuffleInPlace(pool);
+    pool.sort(function (a, b) {
+      return Math.abs(a.price - profile.price) - Math.abs(b.price - profile.price);
+    });
+
+    const selected = pool.slice(0, ASSIGNED_PROPERTY_COUNT);
+    shuffleInPlace(selected);
+    return {selected: selected, relaxedRoomFilter: relaxed};
+  }
+
+  function decorateAssignedProperty(shapedProperty, baseItem, attributes) {
+    shapedProperty.attributes = attributes;
+    shapedProperty.beds = attributes.beds;
+    shapedProperty.baths = attributes.baths;
+    shapedProperty.underlyingPrice = getPropertyPrice(baseItem);
+    return shapedProperty;
+  }
+
+  function readStoredAssignment(baseById) {
+    const raw = getEmbeddedDataValue(ASSIGNMENT_FIELD);
+    if (!raw) return null;
+
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || !Array.isArray(parsed.properties) ||
+        parsed.properties.length !== ASSIGNED_PROPERTY_COUNT) {
+        return null;
+      }
+      const allKnown = parsed.properties.every(function (entry) {
+        return entry && entry.propertyId && baseById[entry.propertyId] && entry.attributes;
+      });
+      return allKnown ? parsed : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
   function readPropertiesFromEmbeddedData() {
     const raw = getEmbeddedDataValue(PROPERTY_ITEMS_FIELD);
     if (!raw) return null;
@@ -950,27 +1193,47 @@ Qualtrics.SurveyEngine.addOnReady(function () {
       if (!Array.isArray(parsed) || !parsed.length) {
         throw new Error("propertyItems must be a non-empty JSON array.");
       }
-      const treatmentItem = readTreatmentItemFromEmbeddedData() || {};
-      const propertyIds = Array.isArray(treatmentItem.propertyIds) ? treatmentItem.propertyIds.map(String) : [];
-      if (!propertyIds.length) {
-        throw new Error("treatmentGroupItem must include a non-empty propertyIds array.");
+
+      respondentProfile = readRespondentProfile();
+
+      const baseById = {};
+      parsed.forEach(function (item, index) {
+        baseById[getPropertyId(item, index)] = item || {};
+      });
+
+      const storedAssignment = readStoredAssignment(baseById);
+      if (storedAssignment) {
+        return storedAssignment.properties.map(function (entry, index) {
+          const base = baseById[entry.propertyId];
+          return decorateAssignedProperty(
+            shapePropertyData(base, entry.propertyId, index),
+            base,
+            entry.attributes
+          );
+        });
       }
 
-      const propertyMap = {};
-      parsed.forEach(function (item, index) {
-        const id = String(item.propertyId || item.id || ("property-" + (index + 1)));
-        propertyMap[id] = item || {};
+      const assignment = assignProperties(parsed, respondentProfile);
+      const storedProperties = [];
+      const shaped = assignment.selected.map(function (entry, index) {
+        const attributes = generateDisplayAttributes(respondentProfile);
+        storedProperties.push({propertyId: entry.id, attributes: attributes});
+        return decorateAssignedProperty(
+          shapePropertyData(entry.item, entry.id, index),
+          entry.item,
+          attributes
+        );
       });
 
-      return propertyIds.map(function (propertyId, index) {
-        const property = propertyMap[propertyId];
-        if (!property) {
-          throw new Error("Property ID " + propertyId + " is listed in treatmentGroupItem but missing from propertyItems.");
-        }
-        return shapePropertyData(property, propertyId, index);
-      });
+      setEmbeddedDataValue(ASSIGNMENT_FIELD, JSON.stringify({
+        marketTypeCode: respondentProfile.code,
+        relaxedRoomFilter: assignment.relaxedRoomFilter,
+        properties: storedProperties
+      }));
+
+      return shaped;
     } catch (error) {
-      console.error("Could not parse propertyItems embedded data.", error);
+      console.error("Could not build the Phase 1 property assignment.", error);
       throw new Error(error.message || "Property data in Qualtrics could not be parsed. Check the propertyItems JSON.");
     }
   }
@@ -1034,17 +1297,41 @@ Qualtrics.SurveyEngine.addOnReady(function () {
         .doc(responseDocId)
         .collection("Ratings");
 
+      let relaxedRoomFilter = null;
+      try {
+        const storedAssignmentRaw = getEmbeddedDataValue(ASSIGNMENT_FIELD);
+        if (storedAssignmentRaw) {
+          relaxedRoomFilter = Boolean(JSON.parse(storedAssignmentRaw).relaxedRoomFilter);
+        }
+      } catch (assignmentError) {
+        relaxedRoomFilter = null;
+      }
+
       const saveMetadata = metadataDoc.set({
         userId: userId || "",
-        treatmentGroupId: getEmbeddedDataValue(TREATMENT_FIELD) || ""
+        treatmentGroupId: getEmbeddedDataValue(TREATMENT_FIELD) || "",
+        eligiblePurchase: getEmbeddedDataValue("eligiblePurchase") || "",
+        marketTypeCode: respondentProfile ? respondentProfile.code : "",
+        marketTypeLabel: respondentProfile ? respondentProfile.label : "",
+        idealBedrooms: respondentProfile ? respondentProfile.bedrooms : null,
+        idealBathrooms: respondentProfile ? respondentProfile.bathrooms : null,
+        selfReportedPrice: respondentProfile ? respondentProfile.price : null,
+        relaxedRoomFilter: relaxedRoomFilter,
+        assignedPropertyIds: loadedProperties.map(function (property) {
+          return property.docId;
+        })
       }, {merge: true});
 
-      const saveRatings = runtimeResponses.map(function (state) {
+      const saveRatings = runtimeResponses.map(function (state, index) {
+        const property = loadedProperties[index] || {};
         return ratingsCollection
           .doc(state.docId)
           .set({
             wtp: state.wtp,
-            openHouse: state.openHouse
+            openHouse: state.openHouse,
+            displayOrder: index + 1,
+            underlyingPrice: property.underlyingPrice !== undefined ? property.underlyingPrice : null,
+            attributes: property.attributes || null
           }, {merge: true});
       });
 
@@ -1061,21 +1348,6 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     }
 
     return Promise.reject(new Error("Missing propertyItems embedded data. Add the propertyItems JSON before Phase 1."));
-  }
-
-  function readTreatmentItemFromEmbeddedData() {
-    const raw = getEmbeddedDataValue(TREATMENT_ITEM_FIELD);
-    if (!raw) return null;
-
-    try {
-      const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error("treatmentGroupItem must be a single JSON object.");
-      }
-      return parsed;
-    } catch (error) {
-      throw new Error("Invalid treatmentGroupItem embedded data. Check the JSON for this treatment branch.");
-    }
   }
 
   function renderLoadingState() {
@@ -1137,20 +1409,11 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     const card = createEl("div", "hs-card" + (property.featured ? " featured" : ""));
     card.dataset.index = String(index);
 
-    const image = createEl("div", "hs-card-image " + property.bgClass);
-    image.textContent = property.icon;
-
+    // Cards intentionally show no photo, icon, or address (meeting decision,
+    // Aug 2026): houses are identified by a neutral number and described only
+    // by aggregate neighborhood/property chips.
     const body = createEl("div", "hs-card-body");
-    body.appendChild(createEl("div", "hs-address", property.address));
-    body.appendChild(createEl("div", "hs-broker-line", "Previewed in the HomeStudy market"));
-    body.appendChild(createEl("div", "hs-meta", property.meta));
-    body.appendChild(createEl(
-      "div",
-      "hs-facts",
-      [property.beds ? property.beds + " bd" : "", property.baths ? property.baths + " ba" : "", property.sqft ? property.sqft + " sqft" : ""]
-        .filter(Boolean)
-        .join(" | ")
-    ));
+    body.appendChild(createEl("div", "hs-address", "House " + (index + 1)));
 
     const attrs = createEl("div", "hs-attrs");
     attrs.appendChild(createChip("🛏 " + property.beds + " bed"));
@@ -1158,9 +1421,16 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     if (property.sqft) {
       attrs.appendChild(createChip("📐 " + property.sqft + " sqft"));
     }
+    if (property.attributes) {
+      attrs.appendChild(createChip("🏠 " + property.attributes.propertyType));
+      attrs.appendChild(createChip(
+        (property.attributes.walkTransitType === "transit" ? "🚌 " : "🚶 ") +
+        property.attributes.walkTransitText
+      ));
+      attrs.appendChild(createChip("💰 Cost of living: " + property.attributes.costOfLiving));
+      attrs.appendChild(createChip("🎓 School district: " + property.attributes.schoolRating));
+    }
     body.appendChild(attrs);
-
-    body.appendChild(createEl("div", "hs-price-hidden", "🔒 Price revealed in Phase 2"));
 
     const wtpLabel = createEl("div", "hs-wtp-label");
     wtpLabel.appendChild(createEl("span", "", "Maximum WTP"));
@@ -1218,7 +1488,6 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     openHouse.appendChild(toggle);
     body.appendChild(openHouse);
 
-    card.appendChild(image);
     card.appendChild(body);
     return card;
   }
@@ -1244,6 +1513,18 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     header.appendChild(badge);
     header.appendChild(createEl("h2", "hs-title", UI_COPY.title));
     header.appendChild(createEl("p", "hs-subtitle", UI_COPY.subtitle));
+    if (respondentProfile && respondentProfile.label) {
+      header.appendChild(createEl("div", "hs-market-banner", "🏙 Market type: " + respondentProfile.label));
+    }
+
+    const explainer = createEl("div", "hs-wtp-explainer");
+    explainer.appendChild(createEl("strong", "", "💡 What is “maximum willingness to pay”? "));
+    explainer.appendChild(document.createTextNode(
+      "It is the highest price at which you would still be happy to own the house — one dollar more and you would " +
+      "rather walk away. If your bid wins later, you pay the market price, not your bid — so your best strategy is " +
+      "to enter exactly what each house is truly worth to you."
+    ));
+    header.appendChild(explainer);
 
     const allRated = loadedProperties.length > 0 && ratedCount === loadedProperties.length;
     const firstUnratedIndex = runtimeResponses.findIndex(function (state) {
@@ -1323,6 +1604,17 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     const progressCopy = root.querySelector(".hs-progress-copy");
     if (progressCopy) {
       progressCopy.textContent = ratedCount + " of " + loadedProperties.length + " properties rated";
+    }
+
+    const topProgressLabel = root.querySelector(".hs-top-progress-label");
+    if (topProgressLabel) {
+      topProgressLabel.textContent = ratedCount + " / " + loadedProperties.length + " rated";
+    }
+
+    const topProgressFill = root.querySelector(".hs-top-progress-fill");
+    if (topProgressFill) {
+      topProgressFill.style.width =
+        (loadedProperties.length ? Math.round((ratedCount / loadedProperties.length) * 100) : 0) + "%";
     }
 
     const progressSteps = root.querySelectorAll(".hs-progress-step");
@@ -1431,9 +1723,10 @@ Qualtrics.SurveyEngine.addOnReady(function () {
       renderPropertyComparison();
     })
     .catch(function (error) {
-      console.error("Failed to load properties from Firebase.", error);
+      console.error("Failed to load properties.", error);
       renderErrorState(
-        "Property data could not be loaded from Firebase. Check that the PropertyItems documents exist and are readable."
+        error.message ||
+        "Property data could not be loaded. Check the propertyItems JSON and the housing profile answers."
       );
     });
 });

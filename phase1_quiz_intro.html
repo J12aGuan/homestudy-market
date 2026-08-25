@@ -1,0 +1,201 @@
+<hr style="margin-top:40px; margin-bottom:28px; border:none; border-top:1px solid #dde4f0;" />
+
+<div style="max-width:800px; margin:0 auto; font-family:'Avenir Next','Segoe UI','Helvetica Neue',Arial,sans-serif; color:#17213a;">
+
+  <h3 style="font-size:28px; font-weight:800; color:#0f1f3d; margin-bottom:10px;">
+    📝 Phase 1 Quiz
+  </h3>
+
+  <p style="font-size:17px; line-height:1.6; color:#43506d; margin-bottom:10px;">
+    This quiz is designed to make sure you understand how Phase 1 of the housing simulation works.
+  </p>
+
+  <p style="font-size:17px; line-height:1.6; color:#43506d; margin-bottom:24px;">
+    Please answer the following questions before continuing.
+  </p>
+
+  <div style="display:flex; gap:12px; flex-wrap:wrap; margin-top:10px;">
+
+    <button id="hintBtn" type="button" style="
+      background-color:#2451b7;
+      color:white;
+      border:none;
+      padding:12px 18px;
+      border-radius:10px;
+      font-size:15px;
+      font-weight:600;
+      cursor:pointer;
+      box-shadow:0 4px 12px rgba(36,81,183,0.18);
+    ">
+      💡 View Hints
+    </button>
+
+    <button id="imgBtn" type="button" style="
+      background-color:#1f8f5f;
+      color:white;
+      border:none;
+      padding:12px 18px;
+      border-radius:10px;
+      font-size:15px;
+      font-weight:600;
+      cursor:pointer;
+      box-shadow:0 4px 12px rgba(31,143,95,0.18);
+    ">
+      🖼 View Instructions
+    </button>
+
+  </div>
+</div>
+
+
+
+<div id="hintOverlay" style="
+  display:none;
+  position:fixed;
+  top:0;
+  left:0;
+  width:100%;
+  height:100%;
+  background:rgba(0,0,0,0.45);
+  z-index:9999;
+"></div>
+
+
+
+<div id="hintModal" style="
+  display:none;
+  position:fixed;
+  top:50%;
+  left:50%;
+  transform:translate(-50%, -50%);
+  width:min(720px, 92vw);
+  max-height:82vh;
+  overflow-y:auto;
+  background:white;
+  border-radius:18px;
+  box-shadow:0 10px 36px rgba(0,0,0,0.25);
+  padding:28px;
+  z-index:10000;
+  font-family:'Avenir Next','Segoe UI','Helvetica Neue',Arial,sans-serif;
+">
+
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+
+    <strong style="font-size:24px; color:#0f1f3d;">
+      💡 Phase 1 Hints
+    </strong>
+
+    <button id="closeHintBtn" style="
+      background:none;
+      border:none;
+      font-size:28px;
+      cursor:pointer;
+      color:#43506d;
+    ">
+      ✖
+    </button>
+
+  </div>
+
+  <hr style="margin-top:18px; margin-bottom:22px; border:none; border-top:1px solid #e2e8f3;">
+
+  <div style="font-size:16px; line-height:1.7; color:#43506d;">
+
+    <p>
+      <strong>🏠 Property Information:</strong><br>
+      Each house profile contains information about the home&rsquo;s structure, layout, and neighborhood attributes.
+    </p>
+
+    <p>
+      <strong>💲 Hidden Prices:</strong><br>
+      In Phase 1, market prices are intentionally hidden. You must evaluate houses without knowing their listed price.
+    </p>
+
+    <p>
+      <strong>📈 Personal Valuation:</strong><br>
+      For each property, enter the maximum amount you would personally be willing to pay.
+    </p>
+
+    <p>
+      <strong>🎯 Best Strategy:</strong><br>
+      Your entry works like an auction bid: if it later beats the market&rsquo;s hidden price, you pay the market price &mdash; not your number. Reporting your true maximum is always your best move.
+    </p>
+
+    <p>
+      <strong>🏡 Open House Interest:</strong><br>
+      You may indicate whether you are interested in attending the property&rsquo;s open house.
+    </p>
+
+    <p>
+      <strong>⏱ No Timer:</strong><br>
+      There is no countdown timer during Phase 1. Take your time and review each property carefully.
+    </p>
+
+  </div>
+
+</div>
+
+
+
+
+<div id="imgOverlay" style="
+  display:none;
+  position:fixed;
+  top:0;
+  left:0;
+  width:100%;
+  height:100%;
+  background:rgba(0,0,0,0.45);
+  z-index:9999;
+"></div>
+
+
+
+<div id="imgModal" style="
+  display:none;
+  position:fixed;
+  top:50%;
+  left:50%;
+  transform:translate(-50%, -50%);
+  width:min(920px, 95vw);
+  max-height:85vh;
+  overflow-y:auto;
+  background:white;
+  border-radius:18px;
+  box-shadow:0 10px 36px rgba(0,0,0,0.25);
+  padding:28px;
+  z-index:10000;
+  font-family:'Avenir Next','Segoe UI','Helvetica Neue',Arial,sans-serif;
+">
+
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+
+    <strong style="font-size:24px; color:#0f1f3d;">
+      🖼 Phase 1 Instructions
+    </strong>
+
+    <button id="closeImgBtn" style="
+      background:none;
+      border:none;
+      font-size:28px;
+      cursor:pointer;
+      color:#43506d;
+    ">
+      ✖
+    </button>
+
+  </div>
+
+  <hr style="margin-top:18px; margin-bottom:22px; border:none; border-top:1px solid #e2e8f3;">
+
+  <div style="text-align:center;">
+
+    <!-- instruction_assets/phase1_rating_annotated.png -->
+    <img
+      src="https://berkeley.yul1.qualtrics.com/ControlPanel/Graphic.php?IM=IM_mwYYsIUWCUlUqvA"
+      style="max-width:100%; height:auto; border-radius:14px; border:1px solid #dde4f0; margin-bottom:20px;"
+    >
+
+  </div>
+
+</div>

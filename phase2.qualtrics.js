@@ -40,82 +40,106 @@ Qualtrics.SurveyEngine.addOnReady(function () {
 
   const RESPONSES_COLLECTION_PATH = "Responses";
   const ACTIONS_COLLECTION_PATH = "Action";
+  const BIDS_COLLECTION_PATH = "Bids";
   const USER_ID_FIELD = "userId";
   const SESSION_ID_FIELD = "sessionId";
   const PROPERTY_ITEMS_FIELD = "propertyItems";
   const TREATMENT_FIELD = "treatmentGroupId";
-  const TREATMENT_ITEM_FIELD = "treatmentGroupItem";
   const FIREBASE_CONFIG_FIELD = "firebaseConfig";
-  const MARKET_PRESSURE_FIELD = "marketPressure";
-  const TREND_SCALE_FIELD = "trendScale";
-  const MONTH_FIELD = "month";
-  const LEGACY_ROUND_FIELD = "round";
-  const TIME_PER_ROUND_FIELD = "timePerMonth";
+
+  // Housing profile answers (spec Q2-Q4) and the Phase 1 assignment/ratings.
+  const MARKET_TYPE_CODE_FIELD = "market_type_code";
+  const MARKET_TYPE_LABEL_FIELD = "market_type_label";
+  const SELF_REPORTED_PRICE_FIELD = "self_reported_price";
+  const ASSIGNMENT_FIELD = "phase1Assignment";
+  const PHASE1_RATINGS_FIELD = "phase1Ratings";
+  const PHASE2_RESULT_FIELD = "phase2Result";
+
+  // Bidding game parameters (spec section 4). Every value can be overridden
+  // with an Embedded Data field of the same name; the defaults below follow
+  // the spec's tentative numbers and are logged in pi_decisions.md.
+  const CONFIG = {
+    maxRounds: readNumberSetting("phase2MaxRounds", 4),          // bidding rounds per house
+    maxRerolls: readNumberSetting("phase2MaxRerolls", 4),        // "see a different set" uses
+    hazardRate: readNumberSetting("phase2HazardRate", 0.1),      // per-round expiration probability
+    priceBand: readNumberSetting("phase2PriceBand", 0.2),        // algorithm price ~ U[ref*(1-band), ref*(1+band)]
+    housesPerSet: 4
+  };
+
+  const UI_COPY = {
+    boardTitle: "Choose a House to Bid On",
+    boardSubtitle: "Each house shows a reference price. Bid on one house, ask to see a different set of houses, or exit the market.",
+    biddingTitle: "Bidding",
+    doneTitlePurchased: "Purchase Successful",
+    doneTitleExited: "You Left the Market",
+    doneTitleNoHouses: "No Houses Remaining"
+  };
+
   const FIREBASE_SDK_URLS = [
     "https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js",
     "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"
   ];
 
-  const GAME_CONFIG = {
-    baseMoney: 360000,
-    monthlyRent: 2500,
-    maxTurns: 6,
-    defaultInitialVisibleCount: 4
-  };
+  // ---------------------------------------------------------------- state
 
-  let db = null;
-  let userId = "";
-  let sessionId = "";
-  let responseDocId = "";
-  let treatment = "1";
-  let startingMoney = GAME_CONFIG.baseMoney;
-  let availableMoney = GAME_CONFIG.baseMoney;
-  let monthlyRent = GAME_CONFIG.monthlyRent;
-  let maxTurns = GAME_CONFIG.maxTurns;
-  let marketPressure = 0.0015;
-  let trendScale = 0.007;
-  let timePerRoundSeconds = 0;
-  let disappearByPropertyId = {};
-  let currentTurn = 1;
-  let selectedPropertyId = null;
-  let activeOverlay = "";
-  let statusMessage = "";
-  let statusClass = "";
-  let loading = true;
-  let gameOver = false;
-  let gameOutcome = null;
-  let purchasedPropertyId = null;
-  let properties = [];
-  let ratingsByPropertyId = {};
-  let treatmentItem = null;
-  let timerDeadlineAt = 0;
-  let timerIntervalId = null;
-  let timerTurn = 0;
-  let isAdvancingTurn = false;
-  let autoAdvancedTurns = [];
+  let respondentProfile = null;
+  let orderedPool = [];          // all same-market houses, nearest price first
+  let currentSet = [];           // houses currently on the board
+  let shownPropertyIds = {};     // every house ever displayed
+  let removedPropertyIds = {};   // expired or exhausted houses
+  let rerollsUsed = 0;
+  let bidAttempts = [];          // completed bid attempts (for the summary)
+  let hazardDrawCount = 0;
+  let hazardExpiredCount = 0;
+
+  let screenState = "loading";   // loading | board | bidding | done | error
+  let boardMessage = "";
+  let errorMessage = "";
+  let saveInFlight = false;
+
+  let bidding = null;            // {property, round, lastBid, rounds: [], phase: "enter"|"failed"}
+  let doneOutcome = null;        // {type: "purchased"|"exited"|"no_houses", ...}
+
   let phaseStartedAt = 0;
   let timelineEntries = [];
   let activeThinkingSegment = null;
-  let skipCountdownIntervalId = null;
-  let skipCountdownDeadlineAt = 0;
-  let skipCountdownMonth = 0;
-  let skipCountdownStartOffsetMs = 0;
-  let skipCountdownRemainingSecondsAtStart = 0;
+
+  // Soft (non-blocking) time reminder on bidding screens: after this many
+  // milliseconds on a round, a gentle nudge appears. Never blocks anything.
+  const BID_REMINDER_DELAY_MS = 30000;
+  let bidReminderHandle = null;
+
+  function scheduleBidReminder() {
+    if (bidReminderHandle) clearTimeout(bidReminderHandle);
+    bidReminderHandle = setTimeout(function () {
+      if (screenState === "bidding" && bidding && !bidding.showTimeReminder) {
+        bidding.showTimeReminder = true;
+        render();
+      }
+    }, BID_REMINDER_DELAY_MS);
+  }
+
+  function cancelBidReminder() {
+    if (bidReminderHandle) {
+      clearTimeout(bidReminderHandle);
+      bidReminderHandle = null;
+    }
+  }
+
+  // ---------------------------------------------------------------- style
 
   const style = document.createElement("style");
   style.textContent = `
     #qualtrics-root {
       font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-      color: #17213a;
-      font-size: 17px;
+      color: #1a1a2e;
       background: #f6f7fb;
       min-height: 100vh;
       box-sizing: border-box;
-      padding-bottom: 48px;
-      overflow-x: clip;
+      padding-bottom: 40px;
     }
 
-    .p2-platform-header {
+    .hs-platform-header {
       background: white;
       border-bottom: 1px solid #e2e8f3;
       min-height: 68px;
@@ -126,10 +150,10 @@ Qualtrics.SurveyEngine.addOnReady(function () {
       gap: 16px;
       position: sticky;
       top: 0;
-      z-index: 10;
+      z-index: 4;
     }
 
-    .p2-header-logo {
+    .hs-header-logo {
       display: flex;
       align-items: center;
       gap: 10px;
@@ -139,7 +163,7 @@ Qualtrics.SurveyEngine.addOnReady(function () {
       letter-spacing: -0.02em;
     }
 
-    .p2-header-logo-mark {
+    .hs-header-logo-mark {
       width: 28px;
       height: 28px;
       border-radius: 8px;
@@ -152,14 +176,7 @@ Qualtrics.SurveyEngine.addOnReady(function () {
       box-shadow: 0 8px 16px rgba(36,81,183,0.18);
     }
 
-    .p2-header-right {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      flex-wrap: wrap;
-    }
-
-    .p2-phase-indicator {
+    .hs-phase-indicator {
       display: inline-flex;
       align-items: center;
       gap: 4px;
@@ -168,7 +185,7 @@ Qualtrics.SurveyEngine.addOnReady(function () {
       padding: 4px;
     }
 
-    .p2-phase-tab {
+    .hs-phase-tab {
       padding: 7px 14px;
       border-radius: 8px;
       font-size: 12px;
@@ -177,13 +194,13 @@ Qualtrics.SurveyEngine.addOnReady(function () {
       white-space: nowrap;
     }
 
-    .p2-phase-tab.active {
+    .hs-phase-tab.active {
       background: #0f1f3d;
       color: white;
       box-shadow: 0 8px 16px rgba(15,31,61,0.14);
     }
 
-    .p2-banner {
+    .hs-phase-banner {
       background: linear-gradient(135deg, #0f1f3d, #1a3260);
       padding: 14px 28px;
       display: flex;
@@ -193,920 +210,369 @@ Qualtrics.SurveyEngine.addOnReady(function () {
       flex-wrap: wrap;
     }
 
-    .p2-banner-text {
+    .hs-phase-banner-text {
       color: rgba(255,255,255,0.78);
       font-size: 13px;
       line-height: 1.45;
-      max-width: 900px;
+      max-width: 860px;
     }
 
-    .p2-banner-text strong {
+    .hs-phase-banner-text strong {
       color: white;
     }
 
-    .p2-wrap {
-      width: min(1320px, calc(100% - 32px));
+    .hs-phase2-wrap {
+      width: min(1360px, calc(100% - 40px));
       margin: 24px auto 0;
-      padding: 0;
       box-sizing: border-box;
     }
 
-    .p2-header {
-      display: flex;
-      justify-content: space-between;
-      gap: 18px;
-      align-items: flex-start;
-      margin-bottom: 14px;
-    }
-
-    .p2-title {
-      margin: 0 0 4px;
-      color: #0f1f3d;
-      font-size: 28px;
-      line-height: 1.1;
-    }
-
-    .p2-subtitle {
-      margin: 0;
-      color: #5a6480;
-      font-size: 14px;
-      line-height: 1.45;
-      max-width: 760px;
-    }
-
-    .p2-pill-row {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-    }
-
-    .p2-pill {
-      background: white;
-      border: 1px solid #d9e2f0;
-      border-radius: 999px;
-      padding: 8px 12px;
-      color: #43506d;
-      font-size: 12px;
-      font-weight: 700;
-      white-space: nowrap;
-      box-shadow: 0 8px 20px rgba(15,31,61,0.05);
-    }
-
-    .p2-pill.timer {
-      color: #8c3a2f;
-      border-color: #f3c4b8;
-      background: #fff2ef;
-    }
-
-    .p2-pill.timer.low {
-      color: #7d2519;
-      border-color: #e59f90;
-      background: #ffdcd5;
-    }
-
-    .p2-status {
-      border-radius: 10px;
-      padding: 10px 12px;
-      margin: 12px 0;
-      font-size: 14px;
-      line-height: 1.35;
-    }
-
-    .p2-status.info {
-      color: #27417a;
-      background: #eef4ff;
-      border: 1px solid #c8d8ff;
-    }
-
-    .p2-status.error {
-      color: #8c3a2f;
-      background: #fff2ef;
-      border: 1px solid #f3c4b8;
-    }
-
-    .p2-status.success {
-      color: #246342;
-      background: #edf8f0;
-      border: 1px solid #b8e2c8;
-    }
-
-    .p2-layout {
-      display: grid;
-      grid-template-columns: 290px minmax(0, 1fr);
-      gap: 18px;
-      align-items: start;
-    }
-
-    .p2-sidebar {
-      background:
-        linear-gradient(180deg, rgba(255,255,255,0.09), rgba(255,255,255,0)),
-        #0f1f3d;
-      color: white;
-      border-radius: 18px;
-      padding: 16px;
-      box-shadow: 0 18px 42px rgba(15,31,61,0.22);
-      overflow: hidden;
-      margin-bottom: 16px;
-      cursor: pointer;
-      border: 0;
-      width: 100%;
-      text-align: left;
-      font: inherit;
-      transition: transform 120ms ease, box-shadow 120ms ease;
-      position: sticky;
-      top: 106px;
-    }
-
-    .p2-sidebar:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 22px 48px rgba(15,31,61,0.26);
-    }
-
-    .p2-wallet-compact {
-      display: grid;
-      grid-template-columns: auto minmax(0, 1fr) auto;
-      gap: 16px;
+    .hs-badge {
+      display: inline-flex;
       align-items: center;
-    }
-
-    .p2-wallet-kicker {
-      color: rgba(255,255,255,0.62);
+      gap: 8px;
+      background: #0f1f3d;
+      color: #ffc444;
+      border-radius: 6px;
+      padding: 5px 10px;
       font-size: 11px;
-      letter-spacing: 0.12em;
+      font-weight: 700;
+      letter-spacing: 0.04em;
       text-transform: uppercase;
-      font-weight: 800;
-      margin-bottom: 4px;
-    }
-
-    .p2-wallet-title {
-      color: white;
-      font-size: 18px;
-      font-weight: 800;
-      margin-bottom: 0;
-    }
-
-    .p2-money-card {
-      background: rgba(255,255,255,0.08);
-      border: 1px solid rgba(255,255,255,0.12);
-      border-radius: 16px;
-      padding: 14px;
-      margin-bottom: 12px;
-    }
-
-    .p2-payout-card {
-      background: linear-gradient(135deg, #eef4ff, #dbeafe);
-      border: 1px solid #bfd5ff;
-      border-radius: 18px;
-      padding: 18px;
-      margin: 16px 0 18px;
-      box-shadow: 0 10px 26px rgba(58, 111, 232, 0.10);
-    }
-
-    .p2-payout-kicker {
-      color: #4b5b86;
-      font-size: 11px;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      font-weight: 800;
-      margin-bottom: 6px;
-    }
-
-    .p2-payout-value {
-      color: #0f1f3d;
-      font-size: 44px;
-      font-weight: 900;
-      line-height: 1;
       margin-bottom: 10px;
     }
 
-    .p2-payout-value.negative {
-      color: #8c3a2f;
-    }
-
-    .p2-payout-sub {
-      color: #4b5b86;
-      font-size: 14px;
-      line-height: 1.45;
-    }
-
-    .p2-payout-note {
-      color: #7d2519;
-      font-size: 13px;
-      line-height: 1.45;
-      margin-top: 10px;
-      font-weight: 700;
-    }
-
-    .p2-wallet-open {
-      color: #ffc444;
-      font-size: 13px;
-      font-weight: 900;
-      white-space: nowrap;
-    }
-
-    .p2-money-top {
-      display: grid;
-      grid-template-columns: 92px minmax(0, 1fr);
-      gap: 12px;
-      align-items: center;
-    }
-
-    .p2-money-ring {
-      width: 88px;
-      height: 88px;
-      border-radius: 50%;
-      display: grid;
-      place-items: center;
-      background:
-        conic-gradient(#ffc444 var(--money-progress), rgba(255,255,255,0.14) 0);
-      position: relative;
-    }
-
-    .p2-money-ring::before {
-      content: "";
-      position: absolute;
-      width: 66px;
-      height: 66px;
-      border-radius: 50%;
-      background: #0f1f3d;
-      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
-    }
-
-    .p2-ring-value {
-      position: relative;
-      color: #ffc444;
-      font-size: 19px;
-      font-weight: 900;
-    }
-
-    .p2-money-label {
-      color: rgba(255,255,255,0.68);
-      font-size: 12px;
-      font-weight: 800;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      margin-bottom: 5px;
-    }
-
-    .p2-money {
-      font-size: 30px;
-      font-weight: 900;
-      line-height: 1;
-      margin-bottom: 7px;
-      color: white;
-    }
-
-    .p2-money-sub {
-      color: rgba(255,255,255,0.68);
-      font-size: 13px;
-      line-height: 1.4;
-    }
-
-    .p2-pressure {
-      background: rgba(255,255,255,0.08);
-      border-radius: 12px;
-      padding: 10px;
-      margin-top: 12px;
-    }
-
-    .p2-pressure-head {
-      display: flex;
-      justify-content: space-between;
-      gap: 10px;
-      font-size: 14px;
-      font-weight: 800;
-      margin-bottom: 8px;
-    }
-
-    .p2-pressure-head span:last-child {
-      color: #ffc444;
-      white-space: nowrap;
-    }
-
-    .p2-pressure-track {
+    .hs-badge-dot {
+      width: 8px;
       height: 8px;
-      border-radius: 999px;
-      background: rgba(255,255,255,0.14);
-      overflow: hidden;
+      border-radius: 50%;
+      background: #ffc444;
     }
 
-    .p2-pressure-fill {
-      height: 100%;
-      width: var(--turn-progress);
-      border-radius: inherit;
-      background: linear-gradient(90deg, #73e0aa, #ffc444);
-    }
-
-    .p2-stat-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 8px;
-    }
-
-    .p2-stat {
-      background: rgba(255,255,255,0.08);
-      border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 12px;
-      padding: 10px;
-      font-size: 12px;
-      color: rgba(255,255,255,0.62);
-      min-height: 56px;
-    }
-
-    .p2-stat b {
-      display: block;
-      color: white;
-      font-size: 15px;
-      margin-top: 5px;
-      line-height: 1.1;
-    }
-
-    .p2-market-shell {
-      background: white;
-      border: 1px solid #dde4f0;
-      border-radius: 22px;
-      box-shadow: 0 14px 34px rgba(15,31,61,0.06);
-      padding: 20px;
-    }
-
-    .p2-market-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 16px;
-      margin-bottom: 18px;
-      padding-bottom: 16px;
-      border-bottom: 1px solid #ebf0f7;
-    }
-
-    .p2-market-title-wrap {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-
-    .p2-market-title {
+    .hs-title {
+      font-size: 24px;
+      font-weight: 700;
       color: #0f1f3d;
-      font-size: 20px;
-      font-weight: 800;
-      letter-spacing: -0.02em;
+      margin: 0 0 4px 0;
     }
 
-    .p2-market-subtitle {
-      color: #5a6480;
+    .hs-subtitle {
       font-size: 13px;
-      line-height: 1.4;
+      color: #5a6480;
+      margin: 0;
+      line-height: 1.35;
     }
 
-    .p2-actions {
-      display: flex;
+    .hs-market-banner {
+      display: inline-flex;
+      align-items: center;
       gap: 8px;
-      flex-wrap: wrap;
-      justify-content: flex-end;
+      background: #eef4ff;
+      border: 1px solid #c8d8ff;
+      color: #27417a;
+      border-radius: 10px;
+      padding: 8px 14px;
+      font-size: 13px;
+      font-weight: 700;
+      margin: 8px 0 2px 0;
     }
 
-    .p2-btn {
-      border: 0;
-      border-radius: 12px;
-      padding: 11px 15px;
-      background: #3a6fe8;
-      color: white;
-      font-size: 14px;
-      font-weight: 800;
-      cursor: pointer;
-      transition: transform 120ms ease, opacity 120ms ease;
-      box-shadow: 0 12px 22px rgba(58,111,232,0.18);
+    .hs-status {
+      margin-top: 10px;
+      padding: 9px 11px;
+      border-radius: 10px;
+      font-size: 12px;
+      line-height: 1.3;
     }
 
-    .p2-btn:hover:not(:disabled) {
-      transform: translateY(-1px);
+    .hs-status.loading {
+      background: #eef4ff;
+      color: #27417a;
+      border: 1px solid #c8d8ff;
     }
 
-    .p2-btn:disabled {
-      opacity: 0.48;
-      cursor: not-allowed;
+    .hs-status.error {
+      background: #fff2ef;
+      color: #8c3a2f;
+      border: 1px solid #f3c4b8;
     }
 
-    .p2-btn.secondary {
-      background: #f8fbff;
-      color: #2451b7;
-      border: 1px solid #cfddf7;
-      box-shadow: none;
+    .hs-status.success {
+      background: #edf8f0;
+      color: #246342;
+      border: 1px solid #b8e2c8;
     }
 
-    .p2-grid {
+    .hs-status.notice {
+      background: #fff8e8;
+      color: #7a5a17;
+      border: 1px solid #f0dba8;
+    }
+
+    .hs-card-grid {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 18px;
+      align-items: stretch;
+      margin-top: 14px;
     }
 
-    .p2-card {
-      background: white;
+    @media (max-width: 1280px) {
+      .hs-card-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    .hs-card {
+      background: #ffffff;
       border: 1px solid #dde4f0;
       border-radius: 20px;
       overflow: hidden;
+      box-shadow: 0 10px 28px rgba(15,31,61,0.06);
       display: flex;
       flex-direction: column;
-      min-height: 390px;
-      cursor: pointer;
-      text-align: left;
-      padding: 0;
-      transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease, opacity 120ms ease;
-      box-shadow: 0 10px 26px rgba(15,31,61,0.06);
+      height: 100%;
+      transition: transform 140ms ease, box-shadow 140ms ease;
     }
 
-    .p2-card:hover:not(:disabled) {
+    .hs-card:hover {
       transform: translateY(-2px);
       box-shadow: 0 18px 38px rgba(15,31,61,0.10);
     }
 
-    .p2-card.selected {
-      border-color: #3a6fe8;
-      box-shadow: 0 0 0 3px rgba(58,111,232,0.13);
-    }
-
-    .p2-card.unavailable {
-      opacity: 0.58;
-      cursor: not-allowed;
-    }
-
-    .p2-img {
-      height: 190px;
+    .hs-card-image {
+      height: 150px;
       display: flex;
       align-items: center;
       justify-content: center;
-      position: relative;
-      font-size: 46px;
-      overflow: hidden;
-    }
-
-    .p2-photo-bar {
-      position: absolute;
-      left: 12px;
-      right: 12px;
-      bottom: 12px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 10px;
-    }
-
-    .p2-photo-pill,
-    .p2-save-pill {
-      border-radius: 999px;
-      padding: 6px 10px;
-      font-size: 11px;
-      font-weight: 800;
-      backdrop-filter: blur(10px);
-    }
-
-    .p2-photo-pill {
-      background: rgba(255,255,255,0.9);
-      color: #0f1f3d;
-    }
-
-    .p2-save-pill {
-      background: rgba(15,31,61,0.72);
-      color: white;
+      font-size: 44px;
     }
 
     .bg-blue { background: linear-gradient(135deg, #dbeafe, #bfdbfe); }
     .bg-amber { background: linear-gradient(135deg, #fef3c7, #fde68a); }
     .bg-green { background: linear-gradient(135deg, #d1fae5, #a7f3d0); }
-    .bg-purple { background: linear-gradient(135deg, #ede9fe, #ddd6fe); }
-    .bg-rose { background: linear-gradient(135deg, #ffe4e6, #fecdd3); }
 
-    .p2-tag {
-      position: absolute;
-      left: 12px;
-      top: 12px;
-      border-radius: 999px;
-      padding: 5px 9px;
-      background: rgba(15,31,61,0.76);
-      color: white;
-      font-size: 10px;
-      font-weight: 800;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
-
-    .p2-tag.comp-low,
-    .p2-chip.comp-low {
-      background: rgba(30, 140, 90, 0.86);
-      color: white;
-    }
-
-    .p2-tag.comp-medium,
-    .p2-chip.comp-medium {
-      background: rgba(232, 163, 23, 0.9);
-      color: white;
-    }
-
-    .p2-tag.comp-high,
-    .p2-chip.comp-high {
-      background: rgba(192, 57, 43, 0.9);
-      color: white;
-    }
-
-    .p2-body {
-      padding: 16px 16px 18px;
+    .hs-card-body {
+      padding: 14px 16px;
       display: flex;
       flex-direction: column;
       flex: 1;
     }
 
-    .p2-price-row {
-      display: flex;
-      justify-content: space-between;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: flex-start;
-      margin-bottom: 7px;
-    }
-
-    .p2-price {
-      color: #0f1f3d;
-      font-size: 31px;
-      font-weight: 900;
-      line-height: 1;
-    }
-
-    .p2-price-change {
-      font-size: 12px;
-      color: #1e8c5a;
+    .hs-address {
+      font-size: 17px;
       font-weight: 800;
-      line-height: 1.3;
-    }
-
-    .p2-price-change.up {
-      color: #c0392b;
-    }
-
-    .p2-address {
       color: #0f1f3d;
-      font-size: 20px;
-      font-weight: 800;
-      margin-bottom: 3px;
+      margin-bottom: 2px;
     }
 
-    .p2-broker-line {
-      color: #6a738c;
+    .hs-meta {
       font-size: 12px;
-      font-weight: 700;
-      margin-bottom: 7px;
-    }
-
-    .p2-meta {
       color: #5a6480;
-      font-size: 13px;
-      line-height: 1.35;
       margin-bottom: 8px;
     }
 
-    .p2-facts {
+    .hs-facts {
       color: #0f1f3d;
       font-size: 13px;
       font-weight: 800;
       margin-bottom: 10px;
     }
 
-    .p2-initial-price {
-      color: #5a6480;
-      font-size: 12px;
-      font-weight: 700;
-      margin-bottom: 10px;
+    .hs-ref-price {
+      background: #f8fbff;
+      border: 1px solid #cfdcf4;
+      border-radius: 12px;
+      padding: 10px 12px;
+      margin-bottom: 12px;
     }
 
-    .p2-card-footer {
-      display: flex;
-      gap: 7px;
-      flex-wrap: wrap;
+    .hs-ref-price-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: #5a6480;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .hs-ref-price-value {
+      font-size: 20px;
+      font-weight: 800;
+      color: #0f1f3d;
+    }
+
+    .hs-button {
+      border: 0;
+      border-radius: 10px;
+      padding: 11px 15px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 120ms ease, opacity 120ms ease;
+      font-family: inherit;
+    }
+
+    .hs-button:hover:not(:disabled) {
+      transform: translateY(-1px);
+    }
+
+    .hs-button:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+    }
+
+    .hs-button.primary {
+      background: #2451b7;
+      color: white;
+      box-shadow: 0 12px 20px rgba(36,81,183,0.20);
+    }
+
+    .hs-button.secondary {
+      background: #eef2f8;
+      color: #27417a;
+      border: 1px solid #c8d8ff;
+    }
+
+    .hs-button.danger {
+      background: #fff2ef;
+      color: #8c3a2f;
+      border: 1px solid #f3c4b8;
+    }
+
+    .hs-button.block {
+      width: 100%;
       margin-top: auto;
     }
 
-    .p2-chip {
-      border-radius: 999px;
-      background: #f4f7fb;
-      color: #33415f;
-      border: 1px solid #e2eaf5;
-      padding: 6px 10px;
-      font-size: 11px;
-      font-weight: 700;
-    }
-
-    .p2-chip.strong {
-      background: #eef4ff;
-      color: #2451b7;
-      border-color: #cfe0ff;
-    }
-
-    .p2-overlay-backdrop {
-      position: fixed;
-      inset: 0;
-      background: rgba(10,16,26,0.46);
-      z-index: 9998;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      padding: 20px;
-    }
-
-    .p2-overlay {
-      width: min(100%, 920px);
-      max-height: min(88vh, 760px);
-      overflow: auto;
-      background: #fbfdff;
-      border-radius: 18px;
-      box-shadow: 0 28px 80px rgba(0,0,0,0.28);
-      border: 1px solid #dde4f0;
-    }
-
-    .p2-overlay-top {
+    .hs-board-actions {
       display: flex;
       justify-content: space-between;
-      gap: 14px;
       align-items: center;
-      padding: 14px 16px;
-      background: white;
-      border-bottom: 1px solid #ebf0f7;
-      position: sticky;
-      top: 0;
-      z-index: 1;
-    }
-
-    .p2-overlay-kicker {
-      color: #5a6480;
-      font-size: 11px;
-      font-weight: 900;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      margin-bottom: 3px;
-    }
-
-    .p2-overlay-title {
-      color: #0f1f3d;
-      font-size: 21px;
-      font-weight: 900;
-    }
-
-    .p2-overlay-close {
-      width: 38px;
-      height: 38px;
-      border-radius: 10px;
-      border: 1px solid #dbe5f2;
-      background: #f8fbff;
-      color: #5a6480;
-      font-size: 20px;
-      cursor: pointer;
-    }
-
-    .p2-overlay-body {
-      padding: 16px;
-    }
-
-    .p2-house-canvas {
-      display: grid;
-      grid-template-columns: minmax(220px, 0.82fr) minmax(0, 1.18fr);
-      gap: 14px;
-    }
-
-    .p2-house-hero {
-      border-radius: 16px;
-      min-height: 240px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      position: relative;
-      font-size: 68px;
-      overflow: hidden;
-    }
-
-    .p2-house-hero .p2-tag {
-      left: 14px;
-      top: auto;
-      bottom: 14px;
-      font-size: 11px;
-      padding: 7px 10px;
-    }
-
-    .p2-canvas-panel {
-      background: white;
-      border: 1px solid #dde4f0;
-      border-radius: 16px;
-      padding: 15px;
-    }
-
-    .p2-canvas-price {
-      color: #0f1f3d;
-      font-size: 36px;
-      line-height: 1;
-      font-weight: 900;
-      margin-bottom: 8px;
-    }
-
-    .p2-canvas-copy {
-      color: #5a6480;
-      font-size: 14px;
-      line-height: 1.5;
-      margin-bottom: 14px;
-    }
-
-    .p2-wallet-canvas {
-      display: grid;
-      grid-template-columns: minmax(260px, 0.75fr) minmax(0, 1.25fr);
-      gap: 16px;
-    }
-
-    .p2-wallet-big {
-      background:
-        linear-gradient(180deg, rgba(255,255,255,0.09), rgba(255,255,255,0)),
-        #0f1f3d;
-      color: white;
-      border-radius: 16px;
-      padding: 18px;
-    }
-
-    .p2-wallet-big .p2-money-ring {
-      width: 132px;
-      height: 132px;
-      margin: 6px auto 16px;
-    }
-
-    .p2-wallet-big .p2-money-ring::before {
-      width: 100px;
-      height: 100px;
-    }
-
-    .p2-wallet-big .p2-ring-value {
-      font-size: 28px;
-    }
-
-    .p2-wallet-ledger {
-      background: white;
-      border: 1px solid #dde4f0;
-      border-radius: 16px;
-      padding: 15px;
-    }
-
-    .p2-ledger-row {
-      display: flex;
-      justify-content: space-between;
       gap: 12px;
-      border-bottom: 1px solid #ebf0f7;
-      padding: 11px 0;
+      flex-wrap: wrap;
+      margin-top: 22px;
+      padding: 18px 20px;
+      background: white;
+      border: 1px solid #dde4f0;
+      border-radius: 20px;
+      box-shadow: 0 10px 28px rgba(15,31,61,0.05);
+    }
+
+    .hs-board-actions-note {
+      font-size: 12px;
       color: #5a6480;
-      font-size: 14px;
+      font-weight: 600;
     }
 
-    .p2-ledger-row:last-child {
-      border-bottom: 0;
+    .hs-board-actions-buttons {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
     }
 
-    .p2-ledger-row b {
-      color: #0f1f3d;
-      white-space: nowrap;
+    .hs-bid-panel {
+      width: 100%;
+      margin: 14px auto 0;
+      background: white;
+      border: 1px solid #dde4f0;
+      border-radius: 20px;
+      box-shadow: 0 10px 28px rgba(15,31,61,0.06);
+      padding: 22px 24px;
+      box-sizing: border-box;
     }
 
-    .p2-detail-title {
-      color: #0f1f3d;
-      font-size: 19px;
-      font-weight: 800;
-      margin-bottom: 6px;
-    }
-
-    .p2-detail-copy {
-      color: #5a6480;
-      font-size: 14px;
-      line-height: 1.45;
-      margin-bottom: 12px;
-    }
-
-    .p2-detail-grid {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+    .hs-round-steps {
+      display: flex;
+      align-items: center;
       gap: 8px;
-      margin-bottom: 12px;
+      margin: 10px 0 14px 0;
     }
 
-    .p2-detail-stat {
-      border-radius: 10px;
-      background: #f5f8fc;
-      padding: 9px 10px;
-      font-size: 13px;
+    .hs-round-step {
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      background: #d8d1c4;
+    }
+
+    .hs-round-step.done { background: #b76e6e; }
+    .hs-round-step.current { background: #2451b7; transform: scale(1.2); }
+
+    .hs-bid-field {
+      display: flex;
+      align-items: stretch;
+      max-width: 340px;
+      border: 2px solid #cfddf7;
+      border-radius: 8px;
+      overflow: hidden;
+      background: white;
+      margin: 8px 0 14px 0;
+    }
+
+    .hs-bid-prefix {
+      display: inline-flex;
+      align-items: center;
+      padding: 0 12px;
+      font-size: 16px;
+      font-weight: 700;
       color: #5a6480;
+      background: #f4f6fb;
+      border-right: 1px solid #e3e8f2;
+    }
+
+    .hs-bid-input {
+      width: 100%;
+      padding: 12px 14px;
+      font-size: 16px;
+      border: 0;
+      outline: none;
+      color: #17213a;
+      font-weight: 700;
+      font-family: Arial, sans-serif;
       min-width: 0;
     }
 
-    .p2-detail-stat b {
-      display: block;
+    .hs-bid-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+
+    .hs-done-panel {
+      width: min(100%, 720px);
+      margin: 20px auto 0;
+      background: white;
+      border: 1px solid #dde4f0;
+      border-radius: 20px;
+      box-shadow: 0 10px 28px rgba(15,31,61,0.06);
+      padding: 26px 28px;
+      box-sizing: border-box;
+    }
+
+    .hs-summary-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 0;
+      border-bottom: 1px solid #eef2f8;
+      font-size: 13px;
+      color: #43506d;
+    }
+
+    .hs-summary-row strong {
       color: #0f1f3d;
-      font-size: 15px;
-      margin-top: 3px;
-      line-height: 1.25;
-      overflow-wrap: anywhere;
-      word-break: break-word;
-    }
-
-    .p2-skip-grid {
-      grid-template-columns: repeat(3, minmax(140px, 1fr));
-    }
-
-    @media (max-width: 1200px) {
-      .p2-layout {
-        grid-template-columns: 1fr;
-      }
-
-      .p2-sidebar {
-        position: static;
-        margin-bottom: 16px;
-      }
-
-      .p2-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
-
-      .p2-detail-grid,
-      .p2-skip-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
-
-      .p2-house-canvas,
-      .p2-wallet-canvas {
-        grid-template-columns: 1fr;
-      }
-    }
-
-    @media (max-width: 1100px) {
-      .p2-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
-    }
-
-    @media (max-width: 900px) {
-      .p2-platform-header,
-      .p2-banner {
-        padding-left: 18px;
-        padding-right: 18px;
-      }
-
-      .p2-header,
-      .p2-market-head,
-      .p2-layout {
-        display: block;
-      }
-
-      .p2-pill-row,
-      .p2-actions {
-        justify-content: flex-start;
-        margin-top: 10px;
-      }
-
-      .p2-market-shell {
-        padding: 16px;
-      }
-
-      .p2-grid,
-      .p2-wallet-compact,
-      .p2-skip-grid {
-        grid-template-columns: 1fr;
-      }
     }
   `;
   document.head.appendChild(style);
+
+  // ---------------------------------------------------------------- utils
 
   function createEl(tag, className, text) {
     const el = document.createElement(tag);
     if (className) el.className = className;
     if (text !== undefined && text !== null) el.textContent = text;
     return el;
-  }
-
-  function renderPlatformHeader() {
-    const header = createEl("div", "p2-platform-header");
-    const logo = createEl("div", "p2-header-logo");
-    logo.appendChild(createEl("span", "p2-header-logo-mark", "H"));
-    logo.appendChild(document.createTextNode("HomeStudy"));
-    header.appendChild(logo);
-
-    const right = createEl("div", "p2-header-right");
-    const phaseIndicator = createEl("div", "p2-phase-indicator");
-    phaseIndicator.appendChild(createEl("div", "p2-phase-tab", "Phase 1 · Rating"));
-    phaseIndicator.appendChild(createEl("div", "p2-phase-tab active", "Phase 2 · Market"));
-    right.appendChild(phaseIndicator);
-    header.appendChild(right);
-    return header;
-  }
-
-  function renderMarketBanner() {
-    const banner = createEl("div", "p2-banner");
-    const text = createEl("div", "p2-banner-text");
-    text.appendChild(createEl("strong", "", "Phase 2 — Dynamic Market: "));
-    text.appendChild(document.createTextNode(
-      "Browse live listings, compare your Phase 1 value benchmark with current asking prices, and decide whether to buy now or wait."
-    ));
-    banner.appendChild(text);
-    return banner;
   }
 
   function getEmbeddedDataValue(fieldName) {
@@ -1133,174 +599,44 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     }
   }
 
-  function sanitizeFirestoreDocId(value) {
-    const docId = String(value).trim().replace(/\//g, "_").replace(/\s+/g, "_");
-    return docId === "." || docId === ".." ? "" : docId;
+  function readNumberSetting(fieldName, fallback) {
+    const raw = getEmbeddedDataValue(fieldName);
+    if (!raw) return fallback;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
   }
 
-  function createSessionId() {
-    if (window.crypto && typeof window.crypto.randomUUID === "function") {
-      return "hs_" + window.crypto.randomUUID();
+  function formatCurrencyValue(value) {
+    return Number(value).toLocaleString("en-US", {
+      style: "currency",
+      currency: "USD",
+      maximumFractionDigits: 0
+    });
+  }
+
+  function parseBidValue(rawValue) {
+    const cleaned = String(rawValue).replace(/[$,\s]/g, "");
+    if (!cleaned) return null;
+    const parsed = Number(cleaned);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }
+
+  function shuffleInPlace(list) {
+    for (let i = list.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const swap = list[i];
+      list[i] = list[j];
+      list[j] = swap;
     }
-
-    return "hs_" + Date.now() + "_" + Math.random().toString(36).slice(2, 12);
+    return list;
   }
 
-  function ensureSessionId() {
-    const existing = getEmbeddedDataValue(SESSION_ID_FIELD);
-    if (existing) return existing;
-
-    const generated = createSessionId();
-    setEmbeddedDataValue(SESSION_ID_FIELD, generated);
-    return generated;
+  function getBackgroundClass(index) {
+    const classes = ["bg-blue", "bg-amber", "bg-green"];
+    return classes[index % classes.length];
   }
 
-  function padTimePart(value, size) {
-    return String(value).padStart(size, "0");
-  }
-
-  function formatElapsedTime(milliseconds) {
-    const safeMs = Math.max(0, Number(milliseconds) || 0);
-    const hours = Math.floor(safeMs / 3600000);
-    const minutes = Math.floor((safeMs % 3600000) / 60000);
-    const seconds = Math.floor((safeMs % 60000) / 1000);
-    const remainderMs = safeMs % 1000;
-    return [
-      padTimePart(hours, 2),
-      padTimePart(minutes, 2),
-      padTimePart(seconds, 2)
-    ].join(":") + "." + padTimePart(remainderMs, 3);
-  }
-
-  function nowOffsetMs() {
-    return Math.max(0, Date.now() - phaseStartedAt);
-  }
-
-  function getCurrentMonthIndex() {
-    return currentTurn;
-  }
-
-  function buildTimelineEntry(config) {
-    const entry = {
-      actionType: config.actionType,
-      targetType: config.targetType,
-      targetId: config.targetId,
-      monthIndex: config.monthIndex || getCurrentMonthIndex(),
-      startOffsetMs: config.startOffsetMs,
-      endOffsetMs: config.endOffsetMs,
-      startTime: formatElapsedTime(config.startOffsetMs),
-      endTime: formatElapsedTime(config.endOffsetMs)
-    };
-
-    if (config.metadata && Object.keys(config.metadata).length) {
-      entry.metadata = config.metadata;
-    }
-
-    return entry;
-  }
-
-  function getSkipCountdownSecondsRemaining() {
-    if (!skipCountdownDeadlineAt) return 0;
-    return Math.max(0, Math.ceil((skipCountdownDeadlineAt - Date.now()) / 1000));
-  }
-
-  function getCurrentScreenTarget() {
-    if (skipCountdownDeadlineAt) {
-      return {
-        targetType: "screen",
-        targetId: "month_countdown"
-      };
-    }
-
-    if (activeOverlay === "house") {
-      return {
-        targetType: "screen",
-        targetId: selectedPropertyId ? "house_overlay_" + selectedPropertyId : "house_overlay"
-      };
-    }
-
-    if (activeOverlay === "wallet") {
-      return {
-        targetType: "screen",
-        targetId: "wallet_overlay"
-      };
-    }
-
-    return {
-      targetType: "screen",
-      targetId: "phase2_market"
-    };
-  }
-
-  function beginThinkingSegment(targetType, targetId) {
-    activeThinkingSegment = {
-      actionType: "thinking",
-      targetType: targetType,
-      targetId: targetId,
-      monthIndex: getCurrentMonthIndex(),
-      startOffsetMs: nowOffsetMs()
-    };
-  }
-
-  function ensureThinkingSegment() {
-    if (!activeThinkingSegment) {
-      const screenTarget = getCurrentScreenTarget();
-      beginThinkingSegment(screenTarget.targetType, screenTarget.targetId);
-    }
-  }
-
-  function closeThinkingSegment() {
-    if (!activeThinkingSegment) return;
-
-    const endOffsetMs = nowOffsetMs();
-    timelineEntries.push(buildTimelineEntry({
-      actionType: activeThinkingSegment.actionType,
-      targetType: activeThinkingSegment.targetType,
-      targetId: activeThinkingSegment.targetId,
-      monthIndex: activeThinkingSegment.monthIndex,
-      startOffsetMs: activeThinkingSegment.startOffsetMs,
-      endOffsetMs: endOffsetMs
-    }));
-    activeThinkingSegment = null;
-  }
-
-  function recordAction(actionType, targetType, targetId, options) {
-    closeThinkingSegment();
-    const config = options || {};
-    const startOffsetMs = config.startOffsetMs !== undefined ? config.startOffsetMs : nowOffsetMs();
-    const endOffsetMs = config.endOffsetMs !== undefined ? config.endOffsetMs : startOffsetMs;
-    timelineEntries.push(buildTimelineEntry({
-      actionType: actionType,
-      targetType: targetType,
-      targetId: targetId,
-      monthIndex: config.monthIndex,
-      startOffsetMs: startOffsetMs,
-      endOffsetMs: endOffsetMs,
-      metadata: config.metadata
-    }));
-    if (config.shouldResumeThinking === false) {
-      return;
-    }
-
-    const screenTarget = getCurrentScreenTarget();
-    beginThinkingSegment(screenTarget.targetType, screenTarget.targetId);
-  }
-
-  function saveActionTimeline() {
-    if (!db || !responseDocId) {
-      return Promise.reject(new Error("Action timeline could not be saved because the session is missing."));
-    }
-
-    closeThinkingSegment();
-    return db
-      .collection(RESPONSES_COLLECTION_PATH)
-      .doc(responseDocId)
-      .collection(ACTIONS_COLLECTION_PATH)
-      .doc("Phase2")
-      .set({
-        timeline: timelineEntries.slice()
-      }, {merge: true});
-  }
+  // ---------------------------------------------------------------- firebase
 
   function loadScript(src) {
     return new Promise(function (resolve, reject) {
@@ -1334,27 +670,10 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     });
   }
 
-  function ensureFirebaseReady() {
-    return FIREBASE_SDK_URLS.reduce(function (promise, src) {
-      return promise.then(function () {
-        return loadScript(src);
-      });
-    }, Promise.resolve()).then(function () {
-      const firebaseConfig = getFirebaseConfig();
-      if (!window.firebase.apps.length) {
-        window.firebase.initializeApp(firebaseConfig);
-      }
-
-      return window.firebase.firestore();
-    });
-  }
-
   function getFirebaseConfig() {
     const raw = getEmbeddedDataValue(FIREBASE_CONFIG_FIELD);
     if (!raw) {
-      throw new Error(
-        "Missing firebaseConfig embedded data. Add the Firebase web config JSON in Survey Flow."
-      );
+      throw new Error("Missing firebaseConfig embedded data. Add the Firebase web config JSON in Survey Flow.");
     }
 
     try {
@@ -1362,1193 +681,887 @@ Qualtrics.SurveyEngine.addOnReady(function () {
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
         throw new Error("firebaseConfig must be a single JSON object.");
       }
-
-      const requiredKeys = [
-        "apiKey",
-        "authDomain",
-        "projectId",
-        "storageBucket",
-        "messagingSenderId",
-        "appId"
-      ];
-
-      requiredKeys.forEach(function (key) {
-        if (!parsed[key]) {
-          throw new Error("firebaseConfig is missing required key: " + key);
-        }
-      });
-
       return parsed;
     } catch (error) {
-      throw new Error(
-        "Invalid firebaseConfig embedded data. Check the Firebase web config JSON in Survey Flow."
-      );
+      throw new Error("Invalid firebaseConfig embedded data. Check the Firebase web config JSON in Survey Flow.");
     }
   }
 
-  function money(value) {
-    return Number(value).toLocaleString("en-US", {
-      style: "currency",
-      currency: "USD",
-      maximumFractionDigits: 0
+  function ensureFirebaseReady() {
+    return FIREBASE_SDK_URLS.reduce(function (promise, src) {
+      return promise.then(function () {
+        return loadScript(src);
+      });
+    }, Promise.resolve()).then(function () {
+      if (!window.firebase.apps.length) {
+        window.firebase.initializeApp(getFirebaseConfig());
+      }
+      return window.firebase.firestore();
     });
   }
 
-  function formatMeta(property) {
-    const parts = [];
-    if (property.zip) parts.push(property.zip);
-    if (property.city || property.state) {
-      parts.push([property.city, property.state].filter(Boolean).join(", "));
+  function sanitizeFirestoreDocId(value) {
+    const docId = String(value).trim().replace(/\//g, "_").replace(/\s+/g, "_");
+    return docId === "." || docId === ".." ? "" : docId;
+  }
+
+  function createSessionId() {
+    if (window.crypto && typeof window.crypto.randomUUID === "function") {
+      return "hs_" + window.crypto.randomUUID();
+    }
+    return "hs_" + Date.now() + "_" + Math.random().toString(36).slice(2, 12);
+  }
+
+  function getSessionId() {
+    const existing = getEmbeddedDataValue(SESSION_ID_FIELD);
+    if (existing) return existing;
+    const generated = createSessionId();
+    setEmbeddedDataValue(SESSION_ID_FIELD, generated);
+    return generated;
+  }
+
+  function getResponseDoc(db) {
+    const docId = sanitizeFirestoreDocId(getSessionId());
+    if (!docId) throw new Error("Session ID is missing. Please restart the survey.");
+    return db.collection(RESPONSES_COLLECTION_PATH).doc(docId);
+  }
+
+  // ---------------------------------------------------------------- timeline
+
+  function padTimePart(value, size) {
+    return String(value).padStart(size, "0");
+  }
+
+  function formatElapsedTime(milliseconds) {
+    const safeMs = Math.max(0, Number(milliseconds) || 0);
+    const hours = Math.floor(safeMs / 3600000);
+    const minutes = Math.floor((safeMs % 3600000) / 60000);
+    const seconds = Math.floor((safeMs % 60000) / 1000);
+    const remainderMs = safeMs % 1000;
+    return [padTimePart(hours, 2), padTimePart(minutes, 2), padTimePart(seconds, 2)].join(":") +
+      "." + padTimePart(remainderMs, 3);
+  }
+
+  function nowOffsetMs() {
+    return Math.max(0, Date.now() - phaseStartedAt);
+  }
+
+  function currentScreenTargetId() {
+    if (screenState === "bidding" && bidding) {
+      return "phase2_bidding_" + bidding.property.docId;
+    }
+    return "phase2_" + screenState;
+  }
+
+  function beginThinkingSegment() {
+    activeThinkingSegment = {
+      actionType: "thinking",
+      targetType: "screen",
+      targetId: currentScreenTargetId(),
+      startOffsetMs: nowOffsetMs()
+    };
+  }
+
+  function closeThinkingSegment() {
+    if (!activeThinkingSegment) return;
+    const endOffsetMs = nowOffsetMs();
+    timelineEntries.push({
+      actionType: activeThinkingSegment.actionType,
+      targetType: activeThinkingSegment.targetType,
+      targetId: activeThinkingSegment.targetId,
+      startOffsetMs: activeThinkingSegment.startOffsetMs,
+      endOffsetMs: endOffsetMs,
+      startTime: formatElapsedTime(activeThinkingSegment.startOffsetMs),
+      endTime: formatElapsedTime(endOffsetMs)
+    });
+    activeThinkingSegment = null;
+  }
+
+  function recordAction(actionType, targetType, targetId) {
+    closeThinkingSegment();
+    const offsetMs = nowOffsetMs();
+    timelineEntries.push({
+      actionType: actionType,
+      targetType: targetType,
+      targetId: targetId,
+      startOffsetMs: offsetMs,
+      endOffsetMs: offsetMs,
+      startTime: formatElapsedTime(offsetMs),
+      endTime: formatElapsedTime(offsetMs)
+    });
+    beginThinkingSegment();
+  }
+
+  // ---------------------------------------------------------------- data setup
+
+  function readRespondentProfile() {
+    const code = getEmbeddedDataValue(MARKET_TYPE_CODE_FIELD);
+    const label = getEmbeddedDataValue(MARKET_TYPE_LABEL_FIELD);
+    const priceRaw = getEmbeddedDataValue(SELF_REPORTED_PRICE_FIELD);
+    const price = priceRaw ? Number(priceRaw) : NaN;
+
+    if (!code || !Number.isFinite(price) || price <= 0) {
+      throw new Error(
+        "Missing housing profile answers (market type or self-reported price). " +
+        "The housing profile question must be completed before Phase 2."
+      );
     }
 
-    return parts.join(" · ") || "Market listing";
+    return {code: String(code), label: label || "", price: price};
   }
 
-  function formatSqft(sqft) {
-    return Number(sqft).toLocaleString("en-US");
+  function getPropertyId(item, index) {
+    return String(item.propertyId || item.id || ("property-" + (index + 1)));
   }
 
-  function getBackgroundClass(index) {
-    const classes = ["bg-blue", "bg-green", "bg-amber", "bg-purple", "bg-rose"];
-    return classes[index % classes.length];
+  function getPropertyPrice(item) {
+    const value = Number(item.price || item.phase2Price || item.askPrice);
+    return Number.isFinite(value) && value > 0 ? value : null;
   }
 
-  function toNumber(value) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : 0;
-  }
-
-  function getPositiveNumber(value, defaultValue) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
-  }
-
-  function getPositiveInteger(value, defaultValue) {
-    const parsed = Math.floor(Number(value));
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
-  }
-
-  function formatCountdownLabel(secondsRemaining) {
-    const clampedSeconds = Math.max(0, secondsRemaining);
-    return clampedSeconds + "s left";
-  }
-
-  function getSecondsRemaining() {
-    if (timePerRoundSeconds <= 0 || !timerDeadlineAt) return 0;
-    return Math.max(0, Math.ceil((timerDeadlineAt - Date.now()) / 1000));
-  }
-
-  function getActiveCountdownSecondsRemaining() {
-    if (skipCountdownDeadlineAt) {
-      return getSkipCountdownSecondsRemaining();
+  function readPhase1Wtp() {
+    const raw = getEmbeddedDataValue(PHASE1_RATINGS_FIELD);
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw);
+      const wtpById = {};
+      Object.keys(parsed || {}).forEach(function (propertyId) {
+        const wtp = Number(parsed[propertyId] && parsed[propertyId].wtp);
+        if (Number.isFinite(wtp) && wtp > 0) wtpById[propertyId] = wtp;
+      });
+      return wtpById;
+    } catch (error) {
+      return {};
     }
-    return getSecondsRemaining();
   }
 
-  function updateTimerPill() {
-    const pill = root.querySelector("[data-role='month-timer']");
-    if (!pill) return;
-
-    const secondsRemaining = getActiveCountdownSecondsRemaining();
-    pill.textContent = formatCountdownLabel(secondsRemaining);
-    pill.classList.toggle("low", secondsRemaining <= 10);
-  }
-
-  function clearTurnTimer() {
-    if (timerIntervalId) {
-      window.clearInterval(timerIntervalId);
-      timerIntervalId = null;
+  function readPhase1Assignment() {
+    const raw = getEmbeddedDataValue(ASSIGNMENT_FIELD);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || !Array.isArray(parsed.properties)) return null;
+      const ids = [];
+      const attributesById = {};
+      parsed.properties.forEach(function (entry) {
+        const id = String(entry.propertyId);
+        ids.push(id);
+        if (entry.attributes) attributesById[id] = entry.attributes;
+      });
+      return {ids: ids, attributesById: attributesById};
+    } catch (error) {
+      return null;
     }
-    timerDeadlineAt = 0;
-    timerTurn = 0;
   }
 
-  function clearSkipCountdown() {
-    if (skipCountdownIntervalId) {
-      window.clearInterval(skipCountdownIntervalId);
-      skipCountdownIntervalId = null;
+  // Reference price rule (see pi_decisions.md item 7a). Adopted placeholder:
+  // the respondent's own Phase 1 WTP for the house when available, otherwise
+  // the underlying price scaled by a random factor in [0.9, 1.1].
+  function buildReferencePrice(propertyId, underlyingPrice, wtpById) {
+    if (wtpById[propertyId]) {
+      return {referencePrice: Math.round(wtpById[propertyId]), referenceSource: "phase1_wtp"};
     }
-    skipCountdownDeadlineAt = 0;
-    skipCountdownMonth = 0;
-    skipCountdownStartOffsetMs = 0;
-    skipCountdownRemainingSecondsAtStart = 0;
+    const scaled = underlyingPrice * (0.9 + Math.random() * 0.2);
+    return {referencePrice: Math.round(scaled / 500) * 500, referenceSource: "random_placeholder"};
   }
 
-  function recordAutoAdvanceTurn(turnNumber) {
-    autoAdvancedTurns.push(turnNumber);
-    setEmbeddedDataValue("phase2AutoAdvanceTurns", JSON.stringify(autoAdvancedTurns));
-    setEmbeddedDataValue("phase2AutoAdvanceMonths", JSON.stringify(autoAdvancedTurns));
+  function shapeHouse(item, id, index, wtpById, phase1Attributes) {
+    const underlyingPrice = getPropertyPrice(item);
+    const reference = buildReferencePrice(id, underlyingPrice, wtpById);
+    const metaParts = [];
+    if (item.zip) metaParts.push(item.zip);
+    if (item.city || item.state) {
+      metaParts.push([item.city, item.state].filter(Boolean).join(", "));
+    }
+
+    // Keep the bed/bath counts the respondent saw in Phase 1 (the randomly
+    // sampled display attributes) so the same house never changes size
+    // between phases.
+    const shown = phase1Attributes || null;
+
+    return {
+      docId: id,
+      address: item.address || "Property",
+      meta: metaParts.join(" · ") || "Market listing",
+      beds: (shown && shown.beds) || item.beds || "",
+      baths: (shown && shown.baths) || item.baths || "",
+      sqft: item.sqft ? Number(item.sqft).toLocaleString("en-US") : "",
+      icon: item.icon || "🏠",
+      bgClass: item.bgClass || getBackgroundClass(index),
+      underlyingPrice: underlyingPrice,
+      referencePrice: reference.referencePrice,
+      referenceSource: reference.referenceSource
+    };
   }
 
-  function startTurnTimer() {
-    if (loading || gameOver || timePerRoundSeconds <= 0 || skipCountdownDeadlineAt) {
-      clearTurnTimer();
+  function buildPool() {
+    const raw = getEmbeddedDataValue(PROPERTY_ITEMS_FIELD);
+    if (!raw) {
+      throw new Error("Missing propertyItems embedded data. Add the propertyItems JSON before Phase 2.");
+    }
+
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.length) {
+      throw new Error("propertyItems must be a non-empty JSON array.");
+    }
+
+    respondentProfile = readRespondentProfile();
+    const wtpById = readPhase1Wtp();
+    const assignment = readPhase1Assignment();
+    const attributesById = assignment ? assignment.attributesById : {};
+
+    const candidates = [];
+    parsed.forEach(function (item, index) {
+      const marketCode = String(item.marketTypeCode || item.market_type_code || "");
+      const price = getPropertyPrice(item);
+      if (marketCode !== respondentProfile.code || price === null) return;
+      const id = getPropertyId(item, index);
+      candidates.push(shapeHouse(item, id, index, wtpById, attributesById[id]));
+    });
+
+    if (!candidates.length) {
+      throw new Error("No properties available for market type " + respondentProfile.code + ".");
+    }
+
+    shuffleInPlace(candidates);
+    candidates.sort(function (a, b) {
+      return Math.abs(a.underlyingPrice - respondentProfile.price) -
+        Math.abs(b.underlyingPrice - respondentProfile.price);
+    });
+
+    // Show the Phase 1 houses first when this runs in the same survey as
+    // Phase 1; a standalone Phase 2 session just uses nearest-price order.
+    if (assignment) {
+      const assignedOrder = {};
+      assignment.ids.forEach(function (id, position) { assignedOrder[id] = position; });
+      const first = candidates
+        .filter(function (house) { return assignedOrder[house.docId] !== undefined; })
+        .sort(function (a, b) { return assignedOrder[a.docId] - assignedOrder[b.docId]; });
+      const rest = candidates.filter(function (house) { return assignedOrder[house.docId] === undefined; });
+      orderedPool = first.concat(rest);
+    } else {
+      orderedPool = candidates;
+    }
+
+    // Stable, neutral house labels (no addresses shown to respondents).
+    // Because Phase 1 houses sort first, "House 1"-"House 4" here match the
+    // numbers the respondent saw in Phase 1.
+    orderedPool.forEach(function (house, index) {
+      house.houseNumber = index + 1;
+    });
+  }
+
+  function houseName(house) {
+    return "House " + (house.houseNumber || "?");
+  }
+
+  function availableHouses() {
+    return orderedPool.filter(function (house) {
+      return !removedPropertyIds[house.docId];
+    });
+  }
+
+  function unseenHouses() {
+    return availableHouses().filter(function (house) {
+      return !shownPropertyIds[house.docId];
+    });
+  }
+
+  function dealSet() {
+    // Prefer houses never shown before; top up with previously shown (but
+    // still available) houses when the pool runs low.
+    let next = unseenHouses().slice(0, CONFIG.housesPerSet);
+    if (next.length < CONFIG.housesPerSet) {
+      const currentIds = {};
+      next.forEach(function (house) { currentIds[house.docId] = true; });
+      const topUp = availableHouses().filter(function (house) {
+        return !currentIds[house.docId];
+      }).slice(0, CONFIG.housesPerSet - next.length);
+      next = next.concat(topUp);
+    }
+    next = shuffleInPlace(next.slice());
+    next.forEach(function (house) { shownPropertyIds[house.docId] = true; });
+    return next;
+  }
+
+  // ---------------------------------------------------------------- saving
+
+  function saveBidAttempt(attempt) {
+    return ensureFirebaseReady().then(function (db) {
+      return getResponseDoc(db)
+        .collection(BIDS_COLLECTION_PATH)
+        .doc("attempt-" + String(bidAttempts.length).padStart(2, "0") + "-" + attempt.propertyId)
+        .set(attempt, {merge: true});
+    }).catch(function (error) {
+      console.error("Failed to save bid attempt.", error);
+    });
+  }
+
+  function saveFinalOutcome(outcome) {
+    closeThinkingSegment();
+    const summary = {
+      outcome: outcome.type,
+      purchasedPropertyId: outcome.propertyId || null,
+      // Second-price rule: purchasePrice is what was actually paid (the
+      // algorithm price), with the winning bid recorded alongside.
+      purchasePrice: outcome.pricePaid || null,
+      winningBid: outcome.bid || null,
+      referencePrice: outcome.referencePrice || null,
+      algorithmPrice: outcome.algorithmPrice || null,
+      roundsUsed: outcome.round || null,
+      rerollsUsed: rerollsUsed,
+      bidAttemptCount: bidAttempts.length,
+      hazardDrawCount: hazardDrawCount,
+      hazardExpiredCount: hazardExpiredCount,
+      realizedHazardRate: hazardDrawCount > 0 ? hazardExpiredCount / hazardDrawCount : null,
+      config: {
+        maxRounds: CONFIG.maxRounds,
+        maxRerolls: CONFIG.maxRerolls,
+        hazardRate: CONFIG.hazardRate,
+        priceBand: CONFIG.priceBand
+      }
+    };
+
+    setEmbeddedDataValue(PHASE2_RESULT_FIELD, JSON.stringify(summary));
+
+    return ensureFirebaseReady().then(function (db) {
+      const responseDoc = getResponseDoc(db);
+      const saveSummary = responseDoc
+        .collection("MetaData")
+        .doc("Session")
+        .set({
+          userId: getEmbeddedDataValue(USER_ID_FIELD) || "",
+          treatmentGroupId: getEmbeddedDataValue(TREATMENT_FIELD) || "",
+          phase2: summary
+        }, {merge: true});
+      const saveTimeline = responseDoc
+        .collection(ACTIONS_COLLECTION_PATH)
+        .doc("Phase2")
+        .set({timeline: timelineEntries.slice()}, {merge: true});
+      return Promise.all([saveSummary, saveTimeline]);
+    });
+  }
+
+  // ---------------------------------------------------------------- game logic
+
+  function startBidding(house) {
+    bidding = {
+      property: house,
+      round: 1,
+      lastBid: null,
+      phase: "enter",
+      failMessage: "",
+      showTimeReminder: false,
+      rounds: []
+    };
+    screenState = "bidding";
+    recordAction("start_bidding", "property", house.docId);
+    scheduleBidReminder();
+    render();
+  }
+
+  function drawAlgorithmPrice(referencePrice) {
+    const low = referencePrice * (1 - CONFIG.priceBand);
+    const high = referencePrice * (1 + CONFIG.priceBand);
+    return Math.round(low + Math.random() * (high - low));
+  }
+
+  function finishAttempt(outcomeType, extra) {
+    const attempt = Object.assign({
+      propertyId: bidding.property.docId,
+      referencePrice: bidding.property.referencePrice,
+      referenceSource: bidding.property.referenceSource,
+      underlyingPrice: bidding.property.underlyingPrice,
+      outcome: outcomeType,
+      rounds: bidding.rounds.slice()
+    }, extra || {});
+    bidAttempts.push(attempt);
+    saveBidAttempt(attempt);
+    return attempt;
+  }
+
+  function resolveBid(bidValue) {
+    const house = bidding.property;
+    const algorithmPrice = drawAlgorithmPrice(house.referencePrice);
+    const success = bidValue >= algorithmPrice;
+    const roundRecord = {
+      round: bidding.round,
+      bid: bidValue,
+      algorithmPrice: algorithmPrice,
+      success: success,
+      hazardDraw: null,
+      houseExpired: false
+    };
+
+    bidding.lastBid = bidValue;
+    recordAction("submit_bid", "property", house.docId);
+
+    if (success) {
+      bidding.rounds.push(roundRecord);
+      finishAttempt("purchased");
+      // Second-price rule: the winner pays the seller's (algorithm) price,
+      // not their own bid, so truthful bidding is the best strategy.
+      completeGame({
+        type: "purchased",
+        propertyId: house.docId,
+        houseNumber: house.houseNumber,
+        bid: bidValue,
+        pricePaid: algorithmPrice,
+        referencePrice: house.referencePrice,
+        algorithmPrice: algorithmPrice,
+        round: bidding.round
+      });
       return;
     }
 
-    if (timerTurn !== currentTurn || !timerDeadlineAt) {
-      timerTurn = currentTurn;
-      timerDeadlineAt = Date.now() + (timePerRoundSeconds * 1000);
+    // Failed round: the house survives to the next round only if it passes
+    // the hazard draw (spec: u ~ U(0,1); expire when u < hazard rate).
+    if (bidding.round >= CONFIG.maxRounds) {
+      bidding.rounds.push(roundRecord);
+      finishAttempt("rounds_exhausted");
+      removedPropertyIds[house.docId] = true;
+      returnToBoard("Your final bid on " + houseName(house) + " was not accepted. That house is no longer available.");
+      return;
     }
 
-    if (timerIntervalId) return;
+    const hazardDraw = Math.random();
+    hazardDrawCount += 1;
+    roundRecord.hazardDraw = hazardDraw;
 
-    timerIntervalId = window.setInterval(function () {
-      const secondsRemaining = getSecondsRemaining();
-      updateTimerPill();
-
-      if (secondsRemaining > 0 || isAdvancingTurn || gameOver) {
-        return;
-      }
-
-      clearTurnTimer();
-      waitOneTurn(true);
-    }, 250);
-  }
-
-  function getBasePrice(data, docId) {
-    if (data.phase2Price !== undefined) return toNumber(data.phase2Price);
-    if (data.price !== undefined) return toNumber(data.price);
-    if (data.askPrice !== undefined) return toNumber(data.askPrice);
-
-    throw new Error(
-      "Missing phase2Price for property " +
-      (data.address || data.propertyId || docId || "unknown") +
-      "."
-    );
-  }
-
-  function roundToNearestThousand(value) {
-    return Math.round(value / 1000) * 1000;
-  }
-
-  function getHouseTrend(property) {
-    const timeOnMarket = Math.max(1, property.disappearAfterTurn - property.showRound);
-    const riseThreshold = Math.max(1, maxTurns / 3);
-    const fallThreshold = Math.max(riseThreshold + 1, (2 * maxTurns) / 3);
-
-    if (timeOnMarket <= riseThreshold) {
-      return trendScale;
+    if (hazardDraw < CONFIG.hazardRate) {
+      hazardExpiredCount += 1;
+      roundRecord.houseExpired = true;
+      bidding.rounds.push(roundRecord);
+      finishAttempt("expired");
+      removedPropertyIds[house.docId] = true;
+      returnToBoard(houseName(house) + " left the market before you could bid again.");
+      return;
     }
 
-    if (timeOnMarket >= fallThreshold) {
-      return -trendScale;
+    bidding.rounds.push(roundRecord);
+    bidding.round += 1;
+    bidding.phase = "failed";
+    bidding.showTimeReminder = false;
+    bidding.failMessage = "Your bid of " + formatCurrencyValue(bidValue) +
+      " was not accepted. The house is still on the market.";
+    scheduleBidReminder();
+    render();
+  }
+
+  function exitDuringBidding() {
+    finishAttempt("respondent_exited");
+    recordAction("exit_market", "screen", "phase2_bidding");
+    completeGame({type: "exited"});
+  }
+
+  function returnToBoard(message) {
+    cancelBidReminder();
+    currentSet = currentSet.filter(function (house) {
+      return !removedPropertyIds[house.docId];
+    });
+    bidding = null;
+
+    if (!currentSet.length && !unseenHouses().length && rerollsUsed >= CONFIG.maxRerolls) {
+      completeGame({type: "no_houses"});
+      return;
     }
 
-    const midpoint = (riseThreshold + fallThreshold) / 2;
-    const halfRange = Math.max(0.5, (fallThreshold - riseThreshold) / 2);
-    return trendScale * ((midpoint - timeOnMarket) / halfRange);
-  }
-
-  function priceAtTurn(property, turn) {
-    const turnOffset = Math.max(0, turn - property.showRound);
-    const houseTrend = getHouseTrend(property);
-    const rawPrice = property.basePrice * (
-      1 + houseTrend * turnOffset + (marketPressure * 0.35) * turnOffset * turnOffset
-    );
-    return roundToNearestThousand(rawPrice);
-  }
-
-  function priceForTurn(property) {
-    return priceAtTurn(property, currentTurn);
-  }
-
-  function priceChangeForTurn(property) {
-    if (currentTurn <= property.showRound) return 0;
-    return priceAtTurn(property, currentTurn) - priceAtTurn(property, currentTurn - 1);
-  }
-
-  function unavailableReason(property) {
-    if (purchasedPropertyId && property.docId === purchasedPropertyId) return "Purchased";
-    if (currentTurn < property.showRound) return "Arrives in month " + property.showRound;
-    if (currentTurn >= property.disappearAfterTurn) return "No longer available";
-    if (priceForTurn(property) > availableMoney) return "Insufficient funds";
-    return "";
-  }
-
-  function isAvailable(property) {
-    return !unavailableReason(property);
-  }
-
-  function getCompetitionLevel(property) {
-    if (currentTurn < property.showRound || currentTurn >= property.disappearAfterTurn) {
-      return null;
+    if (!currentSet.length && unseenHouses().length && rerollsUsed < CONFIG.maxRerolls) {
+      // Nothing left on the board but the respondent still has re-rolls: deal
+      // automatically so they always face a real choice.
+      rerollsUsed += 1;
+      currentSet = dealSet();
     }
 
-    const turnsLeft = property.disappearAfterTurn - currentTurn;
-    if (turnsLeft <= 1) {
-      return {label: "High competition", className: "comp-high"};
-    }
-    if (turnsLeft <= 3) {
-      return {label: "Medium competition", className: "comp-medium"};
-    }
-    if (turnsLeft <= 5) {
-      return {label: "Low competition", className: "comp-low"};
-    }
-
-    return {label: "No competition", className: ""};
+    screenState = "board";
+    boardMessage = message || "";
+    render();
   }
 
-  function shapePropertyData(data, fallbackId, index) {
-    const docId = data.propertyId || data.id || fallbackId || "property-" + (index + 1);
-    const disappearAfterTurn = Number(disappearByPropertyId[docId]);
-    const initialVisibleCount = getPositiveInteger(
-      treatmentItem && treatmentItem.initialVisibleCount,
-      Math.min(properties.length || GAME_CONFIG.defaultInitialVisibleCount, GAME_CONFIG.defaultInitialVisibleCount)
-    );
-    const newListingRate = getPositiveInteger(treatmentItem && treatmentItem.newListingRate, 0);
-    const showRound = index < initialVisibleCount || newListingRate <= 0 ?
-      1 :
-      2 + Math.floor((index - initialVisibleCount) / newListingRate);
-
-    if (!Number.isFinite(disappearAfterTurn) || disappearAfterTurn <= 0) {
-      throw new Error(
-        "Missing disappearByPropertyId entry for property " + docId + "."
-      );
-    }
-
-    return {
-      docId: docId,
-      marketIndex: index,
-      showRound: showRound,
-      address: data.address || "Property " + (index + 1),
-      meta: data.zip ? formatMeta(data) : "Market listing",
-      beds: data.beds || "",
-      baths: data.baths || "",
-      sqft: data.sqft ? formatSqft(data.sqft) : "",
-      icon: data.icon || "🏠",
-      bgClass: data.bgClass || getBackgroundClass(index),
-      featured: Boolean(data.featured),
-      basePrice: getBasePrice(data, docId),
-      disappearAfterTurn: disappearAfterTurn
-    };
+  function rerollBoard() {
+    if (rerollsUsed >= CONFIG.maxRerolls) return;
+    rerollsUsed += 1;
+    recordAction("reroll_houses", "screen", "phase2_board");
+    currentSet = dealSet();
+    boardMessage = "";
+    render();
   }
 
-  function shapeProperty(doc, index) {
-    return shapePropertyData(doc.data() || {}, doc.id, index);
+  function exitFromBoard() {
+    recordAction("exit_market", "screen", "phase2_board");
+    completeGame({type: "exited"});
   }
 
-  function readTreatmentItemFromEmbeddedData() {
-    const raw = getEmbeddedDataValue(TREATMENT_ITEM_FIELD);
-    if (!raw) {
-      throw new Error("Missing treatmentGroupItem embedded data. Add the treatment JSON in the selected treatment branch.");
-    }
+  function completeGame(outcome) {
+    cancelBidReminder();
+    doneOutcome = outcome;
+    screenState = "done";
+    saveInFlight = true;
 
-    try {
-      const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error("treatmentGroupItem must be a single JSON object.");
-      }
-      return parsed;
-    } catch (error) {
-      throw new Error("Invalid treatmentGroupItem embedded data. Check the JSON for this treatment branch.");
-    }
-  }
+    // Kick off the save before rendering so a display problem can never
+    // block the data from being written.
+    const savePromise = saveFinalOutcome(outcome);
+    render();
 
-  function readGameSetup() {
-    userId = getEmbeddedDataValue(USER_ID_FIELD);
-    sessionId = ensureSessionId();
-    responseDocId = sanitizeFirestoreDocId(sessionId);
-    treatment = getEmbeddedDataValue(TREATMENT_FIELD) || "1";
-    treatmentItem = readTreatmentItemFromEmbeddedData();
-    startingMoney = getPositiveNumber(
-      treatmentItem.startingCash,
-      GAME_CONFIG.baseMoney
-    );
-    monthlyRent = getPositiveNumber(
-      treatmentItem.monthlyRent,
-      GAME_CONFIG.monthlyRent
-    );
-    maxTurns = getPositiveNumber(
-      getEmbeddedDataValue(MONTH_FIELD) || getEmbeddedDataValue(LEGACY_ROUND_FIELD),
-      getPositiveNumber(treatmentItem.maxTurns, GAME_CONFIG.maxTurns)
-    );
-    marketPressure = getPositiveNumber(
-      getEmbeddedDataValue(MARKET_PRESSURE_FIELD),
-      0.0015
-    );
-    trendScale = getPositiveNumber(
-      getEmbeddedDataValue(TREND_SCALE_FIELD),
-      0.007
-    );
-    maxTurns = getPositiveNumber(
-      maxTurns,
-      GAME_CONFIG.maxTurns
-    );
-    timePerRoundSeconds = getPositiveInteger(
-      getEmbeddedDataValue(TIME_PER_ROUND_FIELD),
-      getPositiveInteger(treatmentItem.timePerMonth, 0)
-    );
-    disappearByPropertyId = treatmentItem.disappearByPropertyId || {};
-    availableMoney = startingMoney;
-    autoAdvancedTurns = [];
-    setEmbeddedDataValue("phase2AutoAdvanceTurns", "[]");
-    setEmbeddedDataValue("phase2AutoAdvanceMonths", "[]");
-    setEmbeddedDataValue("phase2TimePerMonth", timePerRoundSeconds);
-  }
-
-  function fetchPhaseOneRatings() {
-    const embeddedRatings = getEmbeddedDataValue("phase1Ratings");
-    if (embeddedRatings) {
-      try {
-        return Promise.resolve(JSON.parse(embeddedRatings));
-      } catch (error) {
-        console.warn("Could not parse phase1Ratings embedded data.", error);
-      }
-    }
-
-    if (window.__housingRuntimeResponses && Array.isArray(window.__housingRuntimeResponses)) {
-      const runtimeRatings = {};
-      window.__housingRuntimeResponses.forEach(function (state) {
-        runtimeRatings[state.docId] = {
-          wtp: state.wtp,
-          openHouse: state.openHouse
-        };
-      });
-      return Promise.resolve(runtimeRatings);
-    }
-
-    return db
-      .collection(RESPONSES_COLLECTION_PATH)
-      .doc(responseDocId)
-      .collection("Ratings")
-      .get()
-      .then(function (snapshot) {
-        const ratings = {};
-        snapshot.docs.forEach(function (doc) {
-          ratings[doc.id] = doc.data() || {};
-        });
-        return ratings;
+    savePromise
+      .then(function () {
+        saveInFlight = false;
+        if (typeof qthis.showNextButton === "function") {
+          qthis.showNextButton();
+        }
+        render();
       })
       .catch(function (error) {
-        console.warn("Could not read Phase 1 ratings from Firebase.", error);
-        statusClass = "info";
-        statusMessage = "Phase 2 started, but Phase 1 WTP responses could not be loaded from Firebase.";
-        return {};
+        console.error("Failed to save Phase 2 outcome.", error);
+        saveInFlight = false;
+        errorMessage = error.message || "Failed to save your Phase 2 result.";
+        render();
       });
   }
 
-  function readPropertiesFromEmbeddedData() {
-    const raw = getEmbeddedDataValue(PROPERTY_ITEMS_FIELD);
-    if (!raw) return null;
+  // ---------------------------------------------------------------- rendering
 
-    try {
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed) || !parsed.length) {
-        throw new Error("propertyItems must be a non-empty JSON array.");
-      }
-      const propertyIds = Array.isArray(treatmentItem.propertyIds) ? treatmentItem.propertyIds.map(String) : [];
-      if (!propertyIds.length) {
-        throw new Error("treatmentGroupItem must include a non-empty propertyIds array.");
-      }
-      const propertyMap = {};
-      parsed.forEach(function (item, index) {
-        const id = String(item.propertyId || item.id || ("property-" + (index + 1)));
-        propertyMap[id] = item || {};
-      });
+  function renderPlatformHeader() {
+    const header = createEl("div", "hs-platform-header");
+    const logo = createEl("div", "hs-header-logo");
+    logo.appendChild(createEl("span", "hs-header-logo-mark", "H"));
+    logo.appendChild(document.createTextNode("HomeStudy"));
+    header.appendChild(logo);
 
-      return propertyIds.map(function (propertyId, index) {
-        const property = propertyMap[propertyId];
-        if (!property) {
-          throw new Error("Property ID " + propertyId + " is listed in treatmentGroupItem but missing from propertyItems.");
-        }
-        return shapePropertyData(property, propertyId, index);
-      });
-    } catch (error) {
-      console.error("Could not parse propertyItems embedded data.", error);
-      throw new Error(error.message || "Property data in Qualtrics could not be parsed. Check the propertyItems JSON.");
-    }
+    const phaseIndicator = createEl("div", "hs-phase-indicator");
+    phaseIndicator.appendChild(createEl("div", "hs-phase-tab", "Phase 1 · Rating"));
+    phaseIndicator.appendChild(createEl("div", "hs-phase-tab active", "Phase 2 · Bidding"));
+    header.appendChild(phaseIndicator);
+    return header;
   }
 
-  function fetchProperties() {
-    const embeddedProperties = readPropertiesFromEmbeddedData();
-    if (embeddedProperties) {
-      return Promise.resolve(embeddedProperties);
-    }
-
-    return Promise.reject(new Error("Missing propertyItems embedded data. Add the propertyItems JSON before Phase 2."));
-  }
-
-  function filterPropertiesToPhaseOneSet(allProperties, phaseOneRatings) {
-    const propertyIds = Object.keys(phaseOneRatings || {});
-    if (!propertyIds.length) {
-      return allProperties;
-    }
-
-    const idLookup = {};
-    propertyIds.forEach(function (id) {
-      idLookup[String(id)] = true;
-    });
-
-    return allProperties.filter(function (property) {
-      return idLookup[String(property.docId)];
-    });
-  }
-
-  function renderLoadingState(message) {
-    root.innerHTML = "";
-    root.appendChild(renderPlatformHeader());
-    root.appendChild(renderMarketBanner());
-    const wrap = createEl("div", "p2-wrap");
-    wrap.appendChild(createEl("h2", "p2-title", "Loading Phase 2..."));
-    wrap.appendChild(createEl("div", "p2-status info", message));
-    root.appendChild(wrap);
-  }
-
-  function renderErrorState(message) {
-    root.innerHTML = "";
-    root.appendChild(renderPlatformHeader());
-    root.appendChild(renderMarketBanner());
-    const wrap = createEl("div", "p2-wrap");
-    wrap.appendChild(createEl("h2", "p2-title", "Phase 2 could not start"));
-    wrap.appendChild(createEl("div", "p2-status error", message));
-    root.appendChild(wrap);
-  }
-
-  function computeFinalPayout() {
-    const totalRent = Math.max(0, currentTurn - 1) * monthlyRent;
-    const purchasedProperty = purchasedPropertyId ? properties.find(function (item) {
-      return item.docId === purchasedPropertyId;
-    }) : null;
-    const ratingState = purchasedProperty ? (ratingsByPropertyId[purchasedProperty.docId] || {}) : {};
-    const valueBenchmark = purchasedProperty &&
-      ratingState.wtp !== undefined &&
-      ratingState.wtp !== null ?
-      Number(ratingState.wtp) :
-      0;
-    const purchasePrice = purchasedProperty && gameOutcome && gameOutcome.price ?
-      Number(gameOutcome.price) :
-      0;
-    const preferencePenalty = 0;
-    const finalPayout = purchasedProperty ?
-      (valueBenchmark - purchasePrice - totalRent - preferencePenalty) :
-      (0 - totalRent - preferencePenalty);
-
-    return {
-      totalRent: totalRent,
-      purchasePrice: purchasePrice,
-      preferencePenalty: preferencePenalty,
-      finalPayout: finalPayout
-    };
-  }
-
-  function renderFinishScreen() {
-    root.innerHTML = "";
-    root.appendChild(renderPlatformHeader());
-    root.appendChild(renderMarketBanner());
-
-    const payoutSummary = computeFinalPayout();
-    const wrap = createEl("div", "p2-wrap");
-    const title = gameOutcome && gameOutcome.success ? "Phase 2 Complete" : "Market Closed";
-    const tone = gameOutcome && gameOutcome.success ? "success" : "error";
-    const subtitle = gameOutcome && gameOutcome.message ?
-      gameOutcome.message :
-      "Your results are ready. Continue when you are ready.";
-
-    wrap.appendChild(createEl("h2", "p2-title", title));
-    wrap.appendChild(createEl("div", "p2-status " + tone, subtitle));
-
-    const payoutPanel = createEl("div", "p2-payout-card");
-    payoutPanel.appendChild(createEl("div", "p2-payout-kicker", "Final Payout"));
-    payoutPanel.appendChild(createEl(
-      "div",
-      "p2-payout-value" + (payoutSummary.finalPayout < 0 ? " negative" : ""),
-      money(payoutSummary.finalPayout)
+  function renderPhaseBanner() {
+    const banner = createEl("div", "hs-phase-banner");
+    const text = createEl("div", "hs-phase-banner-text");
+    text.appendChild(createEl("strong", "", "Phase 2 — Bidding: "));
+    text.appendChild(document.createTextNode(
+      "Each house shows a reference price. Place a bid to try to purchase a house. " +
+      "If your bid is not accepted you can bid again, but houses can leave the market at any time."
     ));
-    payoutPanel.appendChild(createEl(
-      "div",
-      "p2-payout-sub",
-      "Calculated from your hidden preference benchmark, the purchase price, and accumulated rent."
-    ));
-    if (payoutSummary.finalPayout < 0) {
-      payoutPanel.appendChild(createEl(
-        "div",
-        "p2-payout-note",
-        "A negative payout means the house price and waiting costs were higher than your hidden value benchmark for this outcome."
-      ));
-    }
-    wrap.appendChild(payoutPanel);
-
-    const ledger = createEl("div", "p2-wallet-ledger");
-    [
-      ["Final balance", money(availableMoney)],
-      ["Rent paid", money(payoutSummary.totalRent)],
-      ["Final month", String(currentTurn)],
-      ["Purchased house", gameOutcome && gameOutcome.address ? gameOutcome.address : "None"],
-      ["Purchase price", gameOutcome && gameOutcome.price ? money(gameOutcome.price) : "—"],
-      ["Preference-match adjustment", payoutSummary.preferencePenalty ? money(-payoutSummary.preferencePenalty) : "None"],
-      ["Final payout", money(payoutSummary.finalPayout)]
-    ].forEach(function (item) {
-      const row = createEl("div", "p2-ledger-row");
-      row.appendChild(createEl("span", "", item[0]));
-      row.appendChild(createEl("b", "", item[1]));
-      ledger.appendChild(row);
-    });
-
-    wrap.appendChild(ledger);
-    wrap.appendChild(createEl(
-      "div",
-      "p2-detail-copy",
-      "Use the survey's Next button to continue."
-    ));
-    root.appendChild(wrap);
+    banner.appendChild(text);
+    return banner;
   }
 
-  function renderPropertyCard(property) {
-    const currentPrice = priceForTurn(property);
-    const priceDelta = priceChangeForTurn(property);
-    const reason = unavailableReason(property);
-    const competition = getCompetitionLevel(property);
-    const ratingState = ratingsByPropertyId[property.docId] || {};
-    const wtp = ratingState.wtp !== undefined && ratingState.wtp !== null ?
-      money(ratingState.wtp) :
-      "—";
+  function renderMarketBanner(parent) {
+    if (respondentProfile && respondentProfile.label) {
+      parent.appendChild(createEl("div", "hs-market-banner", "🏙 Market type: " + respondentProfile.label));
+    }
+  }
 
-    const card = createEl(
-      "button",
-      "p2-card" +
-        (selectedPropertyId === property.docId ? " selected" : "") +
-        (reason ? " unavailable" : "")
-    );
-    card.type = "button";
-    card.dataset.role = "select-property";
-    card.dataset.propertyId = property.docId;
-    card.disabled = gameOver;
+  function renderHouseCard(house, showBidButton) {
+    const card = createEl("div", "hs-card");
 
-    const image = createEl("div", "p2-img " + property.bgClass);
-    image.textContent = property.icon;
-    image.appendChild(createEl("div", "p2-tag", reason || (currentTurn === property.showRound ? "New this month" : "Available")));
-    const photoBar = createEl("div", "p2-photo-bar");
-    photoBar.appendChild(createEl("div", "p2-photo-pill", 18 + (property.marketIndex % 5) * 6 + " photos"));
-    photoBar.appendChild(createEl("div", "p2-save-pill", "Portal view"));
-    image.appendChild(photoBar);
-    card.appendChild(image);
-
-    const body = createEl("div", "p2-body");
-    const priceRow = createEl("div", "p2-price-row");
-    const changeText = currentTurn <= property.showRound ?
-      "Starting price" :
-      (priceDelta >= 0 ? "+" : "-") + money(Math.abs(priceDelta)) + " since last month";
-    const changeClass = "p2-price-change" + (priceDelta > 0 ? " up" : "");
-    priceRow.appendChild(createEl("div", "p2-price", money(currentPrice)));
-    priceRow.appendChild(createEl("div", changeClass, changeText));
-    body.appendChild(priceRow);
-    body.appendChild(createEl("div", "p2-address", property.address));
-    body.appendChild(createEl("div", "p2-broker-line", "Listed in the HomeStudy market"));
-    body.appendChild(createEl("div", "p2-meta", property.meta));
+    // No photo, icon, or address (meeting decision, Aug 2026) — houses keep
+    // the same neutral number they had in Phase 1.
+    const body = createEl("div", "hs-card-body");
+    body.appendChild(createEl("div", "hs-address", houseName(house)));
     body.appendChild(createEl(
       "div",
-      "p2-facts",
-      [property.beds ? property.beds + " bd" : "", property.baths ? property.baths + " ba" : "", property.sqft ? property.sqft + " sqft" : ""]
+      "hs-facts",
+      [house.beds ? house.beds + " bd" : "", house.baths ? house.baths + " ba" : "", house.sqft ? house.sqft + " sqft" : ""]
         .filter(Boolean)
         .join(" | ")
     ));
-    body.appendChild(createEl("div", "p2-initial-price", "Initial price: " + money(property.basePrice)));
 
-    const footer = createEl("div", "p2-card-footer");
-    footer.appendChild(createEl("div", "p2-chip strong", "Your WTP: " + wtp));
-    if (competition) {
-      footer.appendChild(createEl("div", "p2-chip " + competition.className, competition.label));
+    const refBox = createEl("div", "hs-ref-price");
+    refBox.appendChild(createEl("div", "hs-ref-price-label", "Reference price"));
+    refBox.appendChild(createEl("div", "hs-ref-price-value", formatCurrencyValue(house.referencePrice)));
+    body.appendChild(refBox);
+
+    if (showBidButton) {
+      const bidButton = createEl("button", "hs-button primary block", "Bid on this house");
+      bidButton.type = "button";
+      bidButton.dataset.role = "start-bid";
+      bidButton.dataset.propertyId = house.docId;
+      body.appendChild(bidButton);
     }
-    footer.appendChild(createEl("div", "p2-chip", property.beds + " bed"));
-    footer.appendChild(createEl("div", "p2-chip", property.baths + " bath"));
-    if (property.sqft) footer.appendChild(createEl("div", "p2-chip", property.sqft + " sqft"));
-    body.appendChild(footer);
 
     card.appendChild(body);
     return card;
   }
 
-  function renderOverlayShell(kicker, title, body, options) {
-    const config = options || {};
-    const backdrop = createEl("div", "p2-overlay-backdrop");
-    if (config.closable !== false) {
-      backdrop.dataset.role = "close-overlay";
-    }
-    const overlay = createEl("div", "p2-overlay");
-    const top = createEl("div", "p2-overlay-top");
-    const copy = document.createElement("div");
-    copy.appendChild(createEl("div", "p2-overlay-kicker", kicker));
-    copy.appendChild(createEl("div", "p2-overlay-title", title));
-    top.appendChild(copy);
-    if (config.closable !== false) {
-      const close = createEl("button", "p2-overlay-close", "×");
-      close.type = "button";
-      close.dataset.role = "close-overlay";
-      close.setAttribute("aria-label", "Close detail panel");
-      top.appendChild(close);
-    }
-    overlay.appendChild(top);
-    const overlayBody = createEl("div", "p2-overlay-body");
-    overlayBody.appendChild(body);
-    overlay.appendChild(overlayBody);
-    backdrop.appendChild(overlay);
-    return backdrop;
-  }
+  function renderBoard(wrap) {
+    const badge = createEl("div", "hs-badge");
+    badge.appendChild(createEl("div", "hs-badge-dot"));
+    badge.appendChild(document.createTextNode("PHASE 2 ACTIVE"));
+    wrap.appendChild(badge);
+    wrap.appendChild(createEl("h2", "hs-title", UI_COPY.boardTitle));
+    wrap.appendChild(createEl("p", "hs-subtitle", UI_COPY.boardSubtitle));
+    renderMarketBanner(wrap);
 
-  function renderHouseOverlay() {
-    const property = properties.find(function (item) {
-      return item.docId === selectedPropertyId;
+    if (boardMessage) {
+      wrap.appendChild(createEl("div", "hs-status notice", boardMessage));
+    }
+
+    const grid = createEl("div", "hs-card-grid");
+    currentSet.forEach(function (house) {
+      grid.appendChild(renderHouseCard(house, true));
     });
+    wrap.appendChild(grid);
 
-    if (!property || activeOverlay !== "house") return null;
-
-    const ratingState = ratingsByPropertyId[property.docId] || {};
-    const currentPrice = priceForTurn(property);
-    const reason = unavailableReason(property);
-    const competition = getCompetitionLevel(property);
-    const canvas = createEl("div", "p2-house-canvas");
-
-    const hero = createEl("div", "p2-house-hero " + property.bgClass);
-    hero.textContent = property.icon;
-    hero.appendChild(createEl("div", "p2-tag" + (competition && !reason ? " " + competition.className : ""), reason || (competition ? competition.label : "Available")));
-    canvas.appendChild(hero);
-
-    const panel = createEl("div", "p2-canvas-panel");
-    panel.appendChild(createEl("div", "p2-canvas-price", money(currentPrice)));
-    panel.appendChild(createEl(
+    const actions = createEl("div", "hs-board-actions");
+    const rerollsLeft = Math.max(0, CONFIG.maxRerolls - rerollsUsed);
+    actions.appendChild(createEl(
       "div",
-      "p2-canvas-copy",
-      "Use your Phase 1 maximum willingness to pay, the current price, and your remaining money to decide whether to buy now or wait. Internal value calculations stay hidden."
+      "hs-board-actions-note",
+      "Bid on a house above, or use the options here. You can view a different set of houses " +
+      rerollsLeft + " more time" + (rerollsLeft === 1 ? "" : "s") + "."
     ));
 
-    const grid = createEl("div", "p2-detail-grid");
-    const stats = [
-      ["Price", money(currentPrice)],
-      ["Competition", competition ? competition.label : "No competition"],
-      ["Your WTP", ratingState.wtp !== undefined && ratingState.wtp !== null ? money(ratingState.wtp) : "—"],
-      ["Open house", ratingState.openHouse ? "Yes" : "No"],
-      ["Availability", reason || "Available"],
-      ["Appears", "Month " + property.showRound],
-      ["Bedrooms", property.beds || "—"],
-      ["Bathrooms", property.baths || "—"],
-      ["Square feet", property.sqft || "—"],
-      ["Disappears", "Month " + property.disappearAfterTurn]
-    ];
-    stats.forEach(function (item) {
-      const box = createEl("div", "p2-detail-stat", item[0]);
-      box.appendChild(createEl("b", "", item[1]));
-      grid.appendChild(box);
-    });
-    panel.appendChild(grid);
+    const buttons = createEl("div", "hs-board-actions-buttons");
+    const rerollButton = createEl(
+      "button",
+      "hs-button secondary",
+      "See a different set of houses (" + rerollsLeft + " left)"
+    );
+    rerollButton.type = "button";
+    rerollButton.dataset.role = "reroll";
+    rerollButton.disabled = rerollsLeft === 0 || !availableHouses().length;
+    buttons.appendChild(rerollButton);
 
-    const actions = createEl("div", "p2-actions");
-    const buyButton = createEl("button", "p2-btn", "Buy This House");
-    buyButton.type = "button";
-    buyButton.dataset.role = "buy-property";
-    buyButton.dataset.propertyId = property.docId;
-    buyButton.disabled = Boolean(reason) || gameOver;
-    actions.appendChild(buyButton);
+    const exitButton = createEl("button", "hs-button danger", "Exit the home purchasing market");
+    exitButton.type = "button";
+    exitButton.dataset.role = "exit-board";
+    buttons.appendChild(exitButton);
+    actions.appendChild(buttons);
+    wrap.appendChild(actions);
+  }
+
+  function renderBidding(wrap) {
+    const house = bidding.property;
+    const badge = createEl("div", "hs-badge");
+    badge.appendChild(createEl("div", "hs-badge-dot"));
+    badge.appendChild(document.createTextNode("BIDDING · ROUND " + bidding.round + " OF " + CONFIG.maxRounds));
+    wrap.appendChild(badge);
+    wrap.appendChild(createEl("h2", "hs-title", UI_COPY.biddingTitle + ": " + houseName(house)));
+    wrap.appendChild(createEl(
+      "p",
+      "hs-subtitle",
+      "Reference price " + formatCurrencyValue(house.referencePrice) +
+      ". If your bid meets the seller's hidden price, you purchase the house and pay the seller's price — " +
+      "not your bid. If not, you can bid again — but the house may leave the market between rounds."
+    ));
+    renderMarketBanner(wrap);
+
+    const panel = createEl("div", "hs-bid-panel");
+
+    const steps = createEl("div", "hs-round-steps");
+    for (let i = 1; i <= CONFIG.maxRounds; i += 1) {
+      let className = "hs-round-step";
+      if (i < bidding.round) className += " done";
+      if (i === bidding.round) className += " current";
+      steps.appendChild(createEl("div", className));
+    }
+    panel.appendChild(steps);
+
+    if (bidding.phase === "failed") {
+      panel.appendChild(createEl("div", "hs-status notice", bidding.failMessage));
+    }
+
+    if (bidding.showTimeReminder) {
+      panel.appendChild(createEl(
+        "div",
+        "hs-status loading",
+        "⏱ Friendly reminder: take the time you need, but most decisions take about 20–30 seconds."
+      ));
+    }
+
+    const label = createEl("div", "", "Your bid for round " + bidding.round + ":");
+    label.style.fontWeight = "700";
+    label.style.fontSize = "14px";
+    label.style.color = "#0f1f3d";
+    label.style.marginTop = "8px";
+    panel.appendChild(label);
+
+    const field = createEl("div", "hs-bid-field");
+    field.appendChild(createEl("span", "hs-bid-prefix", "$"));
+    const input = document.createElement("input");
+    input.className = "hs-bid-input";
+    input.type = "text";
+    input.inputMode = "numeric";
+    input.placeholder = "Enter bid amount";
+    input.value = bidding.lastBid !== null ? String(bidding.lastBid) : "";
+    input.dataset.role = "bid-input";
+    field.appendChild(input);
+    panel.appendChild(field);
+
+    const bidError = createEl("div", "hs-status error", "Please enter a valid bid amount.");
+    bidError.style.display = "none";
+    bidError.dataset.role = "bid-error";
+    panel.appendChild(bidError);
+
+    const actions = createEl("div", "hs-bid-actions");
+    const submit = createEl(
+      "button",
+      "hs-button primary",
+      bidding.phase === "failed" ? "Bid again (round " + bidding.round + ")" : "Place bid"
+    );
+    submit.type = "button";
+    submit.dataset.role = "submit-bid";
+    actions.appendChild(submit);
+
+    const exitButton = createEl("button", "hs-button danger", "Exit the home purchasing market");
+    exitButton.type = "button";
+    exitButton.dataset.role = "exit-bidding";
+    actions.appendChild(exitButton);
     panel.appendChild(actions);
 
-    canvas.appendChild(panel);
-    return renderOverlayShell("Listing Detail", property.address, canvas);
+    wrap.appendChild(panel);
   }
 
-  function renderWalletOverlay(moneyProgress, turnProgress, totalRent) {
-    if (activeOverlay !== "wallet") return null;
+  function renderDone(wrap) {
+    const badge = createEl("div", "hs-badge");
+    badge.appendChild(createEl("div", "hs-badge-dot"));
+    badge.appendChild(document.createTextNode("PHASE 2 COMPLETE"));
+    wrap.appendChild(badge);
 
-    const canvas = createEl("div", "p2-wallet-canvas");
-    const big = createEl("div", "p2-wallet-big");
-    big.style.setProperty("--money-progress", moneyProgress + "%");
-    big.style.setProperty("--turn-progress", turnProgress + "%");
-    big.appendChild(createEl("div", "p2-wallet-kicker", "Cash Remaining"));
-    const ring = createEl("div", "p2-money-ring");
-    ring.appendChild(createEl("div", "p2-ring-value", moneyProgress + "%"));
-    big.appendChild(ring);
-    big.appendChild(createEl("div", "p2-money", money(availableMoney)));
-    big.appendChild(createEl("div", "p2-money-sub", "Treatment " + treatment + " start: " + money(startingMoney)));
-    const pressure = createEl("div", "p2-pressure");
-    const pressureHead = createEl("div", "p2-pressure-head");
-    pressureHead.appendChild(createEl("span", "", "Market pressure"));
-    pressureHead.appendChild(createEl("span", "", "Month " + currentTurn + " / " + maxTurns));
-    pressure.appendChild(pressureHead);
-    const pressureTrack = createEl("div", "p2-pressure-track");
-    pressureTrack.appendChild(createEl("div", "p2-pressure-fill"));
-    pressure.appendChild(pressureTrack);
-    big.appendChild(pressure);
-    canvas.appendChild(big);
+    const titles = {
+      purchased: UI_COPY.doneTitlePurchased,
+      exited: UI_COPY.doneTitleExited,
+      no_houses: UI_COPY.doneTitleNoHouses
+    };
+    wrap.appendChild(createEl("h2", "hs-title", titles[doneOutcome.type] || "Phase 2 Complete"));
 
-    const ledger = createEl("div", "p2-wallet-ledger");
-    const rows = [
-      ["Starting cash", money(startingMoney)],
-      ["Available money", money(availableMoney)],
-      ["Rent paid so far", money(totalRent)],
-      ["Monthly rent penalty", money(monthlyRent)],
-      ["Months elapsed", String(currentTurn - 1)],
-      ["Months remaining", String(Math.max(0, maxTurns - currentTurn))]
-    ];
-    rows.forEach(function (item) {
-      const row = createEl("div", "p2-ledger-row");
-      row.appendChild(createEl("span", "", item[0]));
-      row.appendChild(createEl("b", "", item[1]));
-      ledger.appendChild(row);
-    });
-    canvas.appendChild(ledger);
+    const panel = createEl("div", "hs-done-panel");
 
-    return renderOverlayShell("Player Wallet", "Budget And Rent Pressure", canvas);
-  }
-
-  function renderSkipCountdownOverlay() {
-    if (!skipCountdownDeadlineAt) return null;
-
-    const secondsRemaining = getSkipCountdownSecondsRemaining();
-    const body = createEl("div", "p2-wallet-canvas");
-    body.appendChild(createEl("div", "p2-overlay-kicker", "Waiting For Next Month"));
-    body.appendChild(createEl("div", "p2-overlay-title", "Month " + skipCountdownMonth + " is still running"));
-    body.appendChild(createEl(
-      "div",
-      "p2-canvas-copy",
-      "You chose to skip ahead, so this countdown preserves the time cost of waiting. The next month will begin automatically when the current one ends."
-    ));
-    body.appendChild(createEl("div", "p2-canvas-price", formatCountdownLabel(secondsRemaining)));
-
-    const metaGrid = createEl("div", "p2-detail-grid p2-skip-grid");
-    [
-      ["Current month", String(skipCountdownMonth)],
-      ["Monthly rent", money(monthlyRent)],
-      ["Available money", money(availableMoney)]
-    ].forEach(function (item) {
-      const box = createEl("div", "p2-detail-stat", item[0]);
-      box.appendChild(createEl("b", "", item[1]));
-      metaGrid.appendChild(box);
-    });
-    body.appendChild(metaGrid);
-
-    return renderOverlayShell("Month Countdown", "Waiting Out The Month", body, {closable: false});
-  }
-
-  function renderScreen() {
-    if (loading) {
-      renderLoadingState("Loading properties and your Phase 1 WTP responses.");
-      return;
+    if (doneOutcome.type === "purchased") {
+      panel.appendChild(createEl(
+        "div",
+        "hs-status success",
+        "Congratulations! Your bid was accepted and you purchased House " + doneOutcome.houseNumber +
+        " at the seller's price of " + formatCurrencyValue(doneOutcome.pricePaid) + "."
+      ));
+      const rows = [
+        ["House", "House " + doneOutcome.houseNumber],
+        ["Price paid (seller's price)", formatCurrencyValue(doneOutcome.pricePaid)],
+        ["Your bid", formatCurrencyValue(doneOutcome.bid)],
+        ["Reference price", formatCurrencyValue(doneOutcome.referencePrice)],
+        ["Round", String(doneOutcome.round) + " of " + CONFIG.maxRounds]
+      ];
+      rows.forEach(function (pair) {
+        const row = createEl("div", "hs-summary-row");
+        row.appendChild(createEl("span", "", pair[0]));
+        const value = createEl("strong", "", pair[1]);
+        row.appendChild(value);
+        panel.appendChild(row);
+      });
+    } else if (doneOutcome.type === "exited") {
+      panel.appendChild(createEl(
+        "div",
+        "hs-status notice",
+        "You exited the home purchasing market without buying a house."
+      ));
+    } else {
+      panel.appendChild(createEl(
+        "div",
+        "hs-status notice",
+        "There are no houses left to bid on. Phase 2 is complete."
+      ));
     }
 
-    if (gameOver) {
-      renderFinishScreen();
-      return;
+    if (saveInFlight) {
+      panel.appendChild(createEl("div", "hs-status loading", "Saving your Phase 2 results..."));
+    } else if (errorMessage) {
+      panel.appendChild(createEl("div", "hs-status error", errorMessage));
+    } else {
+      panel.appendChild(createEl(
+        "div",
+        "hs-status success",
+        "Your Phase 2 results are saved. Use the survey's Next button to continue."
+      ));
     }
 
+    wrap.appendChild(panel);
+  }
+
+  function render() {
     root.innerHTML = "";
     root.appendChild(renderPlatformHeader());
-    root.appendChild(renderMarketBanner());
+    root.appendChild(renderPhaseBanner());
+    const wrap = createEl("div", "hs-phase2-wrap");
 
-    const totalRent = (currentTurn - 1) * monthlyRent;
-    const availableCount = properties.filter(isAvailable).length;
-
-    const wrap = createEl("div", "p2-wrap");
-    const header = createEl("div", "p2-header");
-    const headerCopy = document.createElement("div");
-    headerCopy.appendChild(createEl("h2", "p2-title", "Phase 2 Housing Market"));
-    headerCopy.appendChild(createEl(
-      "p",
-      "p2-subtitle",
-      "Buy one house before the market closes. Waiting costs fixed rent each month, listings may expire, and new listings can appear over time."
-    ));
-    header.appendChild(headerCopy);
-
-    const pills = createEl("div", "p2-pill-row");
-    pills.appendChild(createEl("div", "p2-pill", "Treatment " + treatment));
-    pills.appendChild(createEl("div", "p2-pill", "Month " + currentTurn + " / " + maxTurns));
-    pills.appendChild(createEl("div", "p2-pill", availableCount + " available"));
-    if (timePerRoundSeconds > 0) {
-      const activeCountdownSeconds = getActiveCountdownSecondsRemaining();
-      const timerPill = createEl(
-        "div",
-        "p2-pill timer" + (activeCountdownSeconds <= 10 ? " low" : ""),
-        formatCountdownLabel(activeCountdownSeconds || timePerRoundSeconds)
-      );
-      timerPill.dataset.role = "month-timer";
-      pills.appendChild(timerPill);
-    }
-    header.appendChild(pills);
-    wrap.appendChild(header);
-
-    if (statusMessage) {
-      wrap.appendChild(createEl("div", "p2-status " + statusClass, statusMessage));
+    if (screenState === "loading") {
+      wrap.appendChild(createEl("h2", "hs-title", "Loading the housing market..."));
+      wrap.appendChild(createEl("div", "hs-status loading", "Preparing your Phase 2 houses."));
+    } else if (screenState === "error") {
+      wrap.appendChild(createEl("h2", "hs-title", "Phase 2"));
+      wrap.appendChild(createEl("div", "hs-status error", errorMessage));
+    } else if (screenState === "board") {
+      renderBoard(wrap);
+    } else if (screenState === "bidding") {
+      renderBidding(wrap);
+    } else if (screenState === "done") {
+      renderDone(wrap);
     }
 
-    const layout = createEl("div", "p2-layout");
-    const moneyProgress = startingMoney > 0 ?
-      Math.max(0, Math.min(100, Math.round((availableMoney / startingMoney) * 100))) :
-      0;
-    const turnProgress = maxTurns > 0 ?
-      Math.max(0, Math.min(100, Math.round((currentTurn / maxTurns) * 100))) :
-      0;
-    const sidebar = createEl("button", "p2-sidebar");
-    sidebar.type = "button";
-    sidebar.dataset.role = "open-wallet";
-    sidebar.style.setProperty("--money-progress", moneyProgress + "%");
-    sidebar.style.setProperty("--turn-progress", turnProgress + "%");
-    const compact = createEl("div", "p2-wallet-compact");
-    const ring = createEl("div", "p2-money-ring");
-    ring.appendChild(createEl("div", "p2-ring-value", moneyProgress + "%"));
-    compact.appendChild(ring);
-    const moneyCopy = document.createElement("div");
-    moneyCopy.appendChild(createEl("div", "p2-wallet-kicker", "Player Wallet"));
-    moneyCopy.appendChild(createEl("div", "p2-wallet-title", "Available Money"));
-    moneyCopy.appendChild(createEl("div", "p2-money-label", "Cash Remaining"));
-    moneyCopy.appendChild(createEl("div", "p2-money", money(availableMoney)));
-    moneyCopy.appendChild(createEl("div", "p2-money-sub", "Treatment " + treatment + " start: " + money(startingMoney)));
-    compact.appendChild(moneyCopy);
-    compact.appendChild(createEl("div", "p2-wallet-open", "View wallet"));
-    sidebar.appendChild(compact);
-
-    const stats = [
-      ["Starting cash", money(startingMoney)],
-      ["Rent paid", money(totalRent)],
-      ["Monthly rent", money(monthlyRent)],
-      ["Months left", String(Math.max(0, maxTurns - currentTurn))]
-    ];
-    const statGrid = createEl("div", "p2-stat-grid");
-    stats.forEach(function (item) {
-      const row = createEl("div", "p2-stat");
-      row.appendChild(document.createTextNode(item[0]));
-      row.appendChild(createEl("b", "", item[1]));
-      statGrid.appendChild(row);
-    });
-    sidebar.appendChild(statGrid);
-    layout.appendChild(sidebar);
-
-    const marketShell = createEl("div", "p2-market-shell");
-    const market = document.createElement("div");
-    const marketHead = createEl("div", "p2-market-head");
-    const marketTitleWrap = createEl("div", "p2-market-title-wrap");
-    marketTitleWrap.appendChild(createEl("div", "p2-market-title", "Homes For You"));
-    marketTitleWrap.appendChild(createEl(
-      "div",
-      "p2-market-subtitle",
-      "Current asking prices reflect this month's market. Open any listing to compare against your Phase 1 maximum WTP."
-    ));
-    marketHead.appendChild(marketTitleWrap);
-    const marketActions = createEl("div", "p2-actions");
-    const waitButton = createEl(
-      "button",
-      "p2-btn secondary",
-      currentTurn >= maxTurns ?
-        "End Market" :
-        (timePerRoundSeconds > 0 ? "Skip To Month End" : "Wait One Month")
-    );
-    waitButton.type = "button";
-    waitButton.dataset.role = "wait-turn";
-    waitButton.disabled = gameOver || Boolean(skipCountdownDeadlineAt);
-    marketActions.appendChild(waitButton);
-    marketHead.appendChild(marketActions);
-    market.appendChild(marketHead);
-
-    const grid = createEl("div", "p2-grid");
-    properties.forEach(function (property) {
-      grid.appendChild(renderPropertyCard(property));
-    });
-    market.appendChild(grid);
-
-    marketShell.appendChild(market);
-    layout.appendChild(marketShell);
-    wrap.appendChild(layout);
-    const houseOverlay = renderHouseOverlay();
-    if (houseOverlay) wrap.appendChild(houseOverlay);
-    const walletOverlay = renderWalletOverlay(moneyProgress, turnProgress, totalRent);
-    if (walletOverlay) wrap.appendChild(walletOverlay);
-    const skipOverlay = renderSkipCountdownOverlay();
-    if (skipOverlay) wrap.appendChild(skipOverlay);
     root.appendChild(wrap);
-    updateTimerPill();
-    startTurnTimer();
   }
 
-  function finishPhase2(property, finalPrice) {
-    gameOver = true;
-    clearTurnTimer();
-    clearSkipCountdown();
-    setEmbeddedDataValue("phase2PurchasedPropertyId", property ? property.docId : "");
-    setEmbeddedDataValue("phase2PurchasedAddress", property ? property.address : "");
-    setEmbeddedDataValue("phase2PurchasePrice", property ? finalPrice : "");
-    setEmbeddedDataValue("phase2FinalMoney", availableMoney);
-    setEmbeddedDataValue("phase2FinalTurn", currentTurn);
-    setEmbeddedDataValue("phase2FinalMonth", currentTurn);
-    recordAction(
-      property ? "complete_purchase" : "complete_no_purchase",
-      property ? "property" : "screen",
-      property ? property.docId : "phase2_market_closed",
-      {shouldResumeThinking: false}
-    );
+  // ---------------------------------------------------------------- events
 
-    if (db && responseDocId) {
-      const saveMetadata = db
-        .collection(RESPONSES_COLLECTION_PATH)
-        .doc(responseDocId)
-        .collection("MetaData")
-        .doc("Session")
-        .set({
-          userId: userId || "",
-          treatmentGroupId: treatment || ""
-        }, {merge: true});
-
-      const savePurchase = db
-        .collection(RESPONSES_COLLECTION_PATH)
-        .doc(responseDocId)
-        .collection("Purchases")
-        .doc("Outcome")
-        .set({
-          propertyId: property ? property.docId : "",
-          address: property ? property.address : "",
-          price: property ? finalPrice : "",
-          rentPaid: Math.max(0, currentTurn - 1) * monthlyRent,
-          totalMonths: currentTurn,
-          finalMoney: availableMoney,
-          finalMonth: currentTurn
-        }, {merge: true});
-
-      const saveActions = saveActionTimeline();
-
-      Promise.all([saveMetadata, savePurchase, saveActions]).catch(function (error) {
-          console.warn("Failed to update session metadata for Phase 2.", error);
-        });
-    }
-
-    if (typeof qthis.showNextButton === "function") {
-      qthis.showNextButton();
-    }
-  }
-
-  function buySelectedProperty(property) {
-    const currentPrice = priceForTurn(property);
-    const reason = unavailableReason(property);
-    if (reason) {
-      statusClass = "error";
-      statusMessage = reason + ". Choose another listing or wait.";
-      renderScreen();
-      return;
-    }
-
-    purchasedPropertyId = property.docId;
-    availableMoney -= currentPrice;
-    activeOverlay = "wallet";
-    gameOutcome = {
-      success: true,
-      message: "You bought " + property.address + " for " + money(currentPrice) + ".",
-      address: property.address,
-      price: currentPrice
-    };
-    statusClass = "success";
-    statusMessage = "Purchase complete: " + property.address + " for " + money(currentPrice) + ". Continue to the next survey page.";
-    finishPhase2(property, currentPrice);
-    renderScreen();
-  }
-
-  function waitOneTurn(triggeredByTimer) {
-    if (gameOver || isAdvancingTurn) return;
-    isAdvancingTurn = true;
-    clearTurnTimer();
-    clearSkipCountdown();
-
-    if (triggeredByTimer) {
-      recordAutoAdvanceTurn(currentTurn);
-    }
-
-    if (currentTurn >= maxTurns) {
-      gameOver = true;
-      gameOutcome = {
-        success: false,
-        message: "You reached the end of the market without buying a house.",
-        address: "",
-        price: ""
-      };
-      statusClass = "error";
-      statusMessage = triggeredByTimer ?
-        "Time expired on the final month, so the market closed automatically. Continue to the next survey page." :
-        "The market closed before you bought a house. Continue to the next survey page.";
-      finishPhase2(null, "");
-      renderScreen();
-      isAdvancingTurn = false;
-      return;
-    }
-
-    currentTurn += 1;
-    availableMoney -= monthlyRent;
-    selectedPropertyId = null;
-    activeOverlay = "";
-    recordAction("advance_month", "month", "month_" + currentTurn, {
-      monthIndex: currentTurn,
-      metadata: {
-        source: triggeredByTimer ? "timer_expired" : "completed_wait"
-      }
-    });
-
-    const availableCount = properties.filter(isAvailable).length;
-    if (availableCount === 0) {
-      gameOver = true;
-      gameOutcome = {
-        success: false,
-        message: "All remaining listings became unavailable before you bought a house.",
-        address: "",
-        price: ""
-      };
-      statusClass = "error";
-      statusMessage = triggeredByTimer ?
-        "Time expired and all remaining listings are now unavailable. Continue to the next survey page." :
-        "All remaining listings are unavailable. Continue to the next survey page.";
-      finishPhase2(null, "");
-    } else {
-      statusClass = "info";
-      statusMessage = triggeredByTimer ?
-        timePerRoundSeconds + " seconds expired, so we moved to the next month automatically. Rent was deducted and the market updated." :
-        "One month passed. Rent was deducted and the market updated.";
-    }
-
-    renderScreen();
-    isAdvancingTurn = false;
-  }
-
-  function beginSkipCountdown() {
-    if (gameOver || isAdvancingTurn || skipCountdownDeadlineAt) return;
-
-    if (timePerRoundSeconds <= 0) {
-      recordAction("skip_month", "button", "skip_month", {
-        metadata: {
-          countdownSeconds: 0
-        },
-        shouldResumeThinking: false
+  function handleInteraction(event) {
+    const startBidButton = event.target.closest("[data-role='start-bid']");
+    if (startBidButton && root.contains(startBidButton) && screenState === "board") {
+      const propertyId = startBidButton.dataset.propertyId;
+      const house = currentSet.find(function (candidate) {
+        return candidate.docId === propertyId;
       });
-      waitOneTurn(false);
+      if (house) startBidding(house);
       return;
     }
 
-    const secondsRemaining = getSecondsRemaining();
-    if (secondsRemaining <= 0) {
-      waitOneTurn(true);
+    const rerollButton = event.target.closest("[data-role='reroll']");
+    if (rerollButton && root.contains(rerollButton) && screenState === "board") {
+      if (!rerollButton.disabled) rerollBoard();
       return;
     }
 
-    activeOverlay = "";
-    clearTurnTimer();
-    skipCountdownMonth = currentTurn;
-    skipCountdownDeadlineAt = Date.now() + (secondsRemaining * 1000);
-    skipCountdownStartOffsetMs = nowOffsetMs();
-    skipCountdownRemainingSecondsAtStart = secondsRemaining;
-    recordAction("skip_month", "button", "skip_month", {
-      metadata: {
-        countdownSeconds: secondsRemaining
-      },
-      shouldResumeThinking: false
-    });
-    renderScreen();
+    const exitBoardButton = event.target.closest("[data-role='exit-board']");
+    if (exitBoardButton && root.contains(exitBoardButton) && screenState === "board") {
+      exitFromBoard();
+      return;
+    }
 
-    skipCountdownIntervalId = window.setInterval(function () {
-      renderScreen();
-      if (getSkipCountdownSecondsRemaining() > 0 || gameOver || isAdvancingTurn) {
+    const submitBidButton = event.target.closest("[data-role='submit-bid']");
+    if (submitBidButton && root.contains(submitBidButton) && screenState === "bidding") {
+      const input = root.querySelector("[data-role='bid-input']");
+      const bidError = root.querySelector("[data-role='bid-error']");
+      const bidValue = input ? parseBidValue(input.value) : null;
+      if (bidValue === null) {
+        if (bidError) bidError.style.display = "block";
         return;
       }
+      resolveBid(bidValue);
+      return;
+    }
 
-      const countdownStartOffsetMs = skipCountdownStartOffsetMs;
-      const countdownMonthIndex = skipCountdownMonth;
-      const countdownSeconds = skipCountdownRemainingSecondsAtStart;
-      clearSkipCountdown();
-      recordAction("skip_month_consequence", "screen", "month_countdown", {
-        monthIndex: countdownMonthIndex,
-        startOffsetMs: countdownStartOffsetMs,
-        endOffsetMs: nowOffsetMs(),
-        metadata: {
-          countdownSeconds: countdownSeconds
-        },
-        shouldResumeThinking: false
-      });
-      recordAction("countdown_complete", "screen", "month_countdown", {
-        monthIndex: countdownMonthIndex,
-        metadata: {
-          countdownSeconds: countdownSeconds
-        },
-        shouldResumeThinking: false
-      });
-      waitOneTurn(false);
-    }, 250);
+    const exitBiddingButton = event.target.closest("[data-role='exit-bidding']");
+    if (exitBiddingButton && root.contains(exitBiddingButton) && screenState === "bidding") {
+      exitDuringBidding();
+    }
   }
 
-  root.addEventListener("click", function (event) {
-    const select = event.target.closest("[data-role='select-property']");
-    if (select && root.contains(select) && !skipCountdownDeadlineAt) {
-      selectedPropertyId = select.dataset.propertyId;
-      activeOverlay = "house";
-      statusMessage = "";
-      recordAction("select_property", "property", selectedPropertyId || "unknown_property");
-      renderScreen();
-      return;
-    }
+  // ---------------------------------------------------------------- boot
 
-    const wallet = event.target.closest("[data-role='open-wallet']");
-    if (wallet && root.contains(wallet) && !skipCountdownDeadlineAt) {
-      activeOverlay = "wallet";
-      recordAction("open_wallet", "button", "wallet");
-      renderScreen();
-      return;
-    }
-
-    const buy = event.target.closest("[data-role='buy-property']");
-    if (buy && root.contains(buy) && !skipCountdownDeadlineAt) {
-      const property = properties.find(function (item) {
-        return item.docId === buy.dataset.propertyId;
-      });
-      if (property) {
-        recordAction("buy_property", "property", property.docId);
-        buySelectedProperty(property);
-      }
-      return;
-    }
-
-    const closeOverlay = event.target.closest("[data-role='close-overlay']");
-    if (closeOverlay && root.contains(closeOverlay) && !skipCountdownDeadlineAt) {
-      const clickedBackdrop = event.target.classList.contains("p2-overlay-backdrop");
-      const clickedCloseButton = event.target.classList.contains("p2-overlay-close");
-      if (clickedBackdrop || clickedCloseButton) {
-        const overlayTargetId = activeOverlay === "house" && selectedPropertyId ?
-          "house_overlay_" + selectedPropertyId :
-          (activeOverlay === "wallet" ? "wallet_overlay" : "overlay");
-        recordAction("close_overlay", "button", overlayTargetId);
-        activeOverlay = "";
-        renderScreen();
-      }
-      return;
-    }
-
-    const wait = event.target.closest("[data-role='wait-turn']");
-    if (wait && root.contains(wait) && !skipCountdownDeadlineAt) {
-      beginSkipCountdown();
-    }
-  });
-
-  renderLoadingState("Loading properties and your Phase 1 WTP responses.");
-  readGameSetup();
+  render();
+  root.addEventListener("click", handleInteraction);
   phaseStartedAt = Date.now();
-  ensureThinkingSegment();
+  beginThinkingSegment();
 
-  if (!responseDocId) {
-    renderErrorState("Session ID is missing. Please restart the survey before continuing.");
-    return;
-  }
-
-  ensureFirebaseReady()
-    .then(function (readyDb) {
-      db = readyDb;
-      return Promise.all([fetchProperties(), fetchPhaseOneRatings()]);
-    })
-    .then(function (results) {
-      ratingsByPropertyId = results[1];
-      properties = filterPropertiesToPhaseOneSet(results[0], ratingsByPropertyId);
-      loading = false;
-      statusClass = "info";
-      statusMessage = timePerRoundSeconds > 0 ?
-        "Phase 1 WTP responses loaded. You have " + timePerRoundSeconds + " seconds each month before the survey moves on automatically." :
-        "Phase 1 WTP responses loaded. Choose a house or wait one month.";
-      renderScreen();
-    })
-    .catch(function (error) {
-      console.error("Failed to load Phase 2.", error);
-      renderErrorState(error.message || "Phase 2 could not load.");
-    });
-
-  if (typeof qthis.addOnUnload === "function") {
-    qthis.addOnUnload(function () {
-      clearTurnTimer();
-    });
+  try {
+    buildPool();
+    currentSet = dealSet();
+    screenState = "board";
+    render();
+  } catch (error) {
+    console.error("Failed to start Phase 2 bidding.", error);
+    screenState = "error";
+    errorMessage = error.message || "Phase 2 could not be started. Check the survey configuration.";
+    render();
   }
 });
