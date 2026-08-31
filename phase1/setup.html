@@ -1,0 +1,111 @@
+<div style="max-width:680px; margin:0 auto; font-family:'Avenir Next','Segoe UI','Helvetica Neue',Arial,sans-serif; color:#17213a; background:#ffffff; border:1px solid #dde4f0; border-radius:18px; padding:0; overflow:hidden;">
+  <div style="background:#0f1f3d; padding:26px 28px; color:white; text-align:center;">
+    <h1 style="font-size:24px; font-weight:800; margin:0 0 6px 0;">
+      Your Housing Profile
+    </h1>
+    <p style="color:rgba(255,255,255,0.82); font-size:14px; margin:0; line-height:1.45;">
+      Tell us about the home you are looking for. Your answers shape the properties you will see in this study.
+    </p>
+  </div>
+  <div style="padding:30px 32px; background:#ffffff;">
+
+    <div id="marketTypeSection" style="background:#f8fbff; border:1px solid #cfddf7; border-radius:14px; padding:22px; margin-bottom:24px;">
+      <label style="display:block; font-weight:700; font-size:16px; color:#0f1f3d; margin-bottom:14px;">
+        Which of the following market types fits your housing needs best?
+      </label>
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        <button type="button" data-market-code="1" data-market-label="Older, lower-income urban market"
+          style="display:block; width:100%; text-align:left; padding:14px 16px; font-family:inherit; border:2px solid #cfddf7; border-radius:10px; background-color:#ffffff; color:#17213a; cursor:pointer;">
+          <span style="display:block; font-weight:700; font-size:15px;">Older, lower-income urban markets</span>
+          <span data-role="market-example" style="display:block; font-size:13px; color:#5a6480; margin-top:3px;">Examples: Norfolk, VA &middot; Omaha, NE &middot; Milwaukee, WI</span>
+        </button>
+        <button type="button" data-market-code="2" data-market-label="Suburban/metropolitan market"
+          style="display:block; width:100%; text-align:left; padding:14px 16px; font-family:inherit; border:2px solid #cfddf7; border-radius:10px; background-color:#ffffff; color:#17213a; cursor:pointer;">
+          <span style="display:block; font-weight:700; font-size:15px;">Suburban/metropolitan markets</span>
+          <span data-role="market-example" style="display:block; font-size:13px; color:#5a6480; margin-top:3px;">Examples: Boston, Atlanta, Chicago, LA and surrounding areas</span>
+        </button>
+        <button type="button" data-market-code="3" data-market-label="High-income resort market"
+          style="display:block; width:100%; text-align:left; padding:14px 16px; font-family:inherit; border:2px solid #cfddf7; border-radius:10px; background-color:#ffffff; color:#17213a; cursor:pointer;">
+          <span style="display:block; font-weight:700; font-size:15px;">High-income resort markets</span>
+          <span data-role="market-example" style="display:block; font-size:13px; color:#5a6480; margin-top:3px;">Examples: Long Beach, CA &middot; Fort Myers, FL</span>
+        </button>
+        <button type="button" data-market-code="4" data-market-label="Lower-cost rural area"
+          style="display:block; width:100%; text-align:left; padding:14px 16px; font-family:inherit; border:2px solid #cfddf7; border-radius:10px; background-color:#ffffff; color:#17213a; cursor:pointer;">
+          <span style="display:block; font-weight:700; font-size:15px;">Lower-cost rural areas</span>
+          <span data-role="market-example" style="display:block; font-size:13px; color:#5a6480; margin-top:3px;">Examples: central Pennsylvania &middot; Midwest</span>
+        </button>
+      </div>
+      <div id="marketTypeError" style="display:none; color:#b00020; margin-top:10px; font-weight:600; font-size:14px;">
+        ⚠️ Please select a market type before continuing.
+      </div>
+    </div>
+
+    <div id="roomsSection" style="background:#f8fbff; border:1px solid #cfddf7; border-radius:14px; padding:22px; margin-bottom:24px;">
+      <label style="display:block; font-weight:700; font-size:16px; color:#0f1f3d; margin-bottom:14px;">
+        What is the ideal number of bedrooms and bathrooms you would consider?
+      </label>
+      <div style="display:flex; gap:16px; flex-wrap:wrap;">
+        <div style="flex:1; min-width:140px;">
+          <label for="bedroomsInput" style="display:block; font-weight:600; font-size:14px; color:#0f1f3d; margin-bottom:8px;">
+            Bedrooms
+          </label>
+          <input
+            id="bedroomsInput"
+            name="bedroomsInput"
+            type="number"
+            min="0"
+            step="1"
+            inputmode="numeric"
+            autocomplete="off"
+            placeholder="e.g. 3"
+            style="width:100%; padding:12px 14px; font-size:16px; border:2px solid #cfddf7; border-radius:8px; color:#17213a; background-color:#ffffff; box-sizing:border-box;"
+          />
+        </div>
+        <div style="flex:1; min-width:140px;">
+          <label for="bathroomsInput" style="display:block; font-weight:600; font-size:14px; color:#0f1f3d; margin-bottom:8px;">
+            Bathrooms
+          </label>
+          <input
+            id="bathroomsInput"
+            name="bathroomsInput"
+            type="number"
+            min="0"
+            step="0.5"
+            inputmode="decimal"
+            autocomplete="off"
+            placeholder="e.g. 2"
+            style="width:100%; padding:12px 14px; font-size:16px; border:2px solid #cfddf7; border-radius:8px; color:#17213a; background-color:#ffffff; box-sizing:border-box;"
+          />
+        </div>
+      </div>
+      <div id="roomsError" style="display:none; color:#b00020; margin-top:10px; font-weight:600; font-size:14px;">
+        ⚠️ Please enter both an ideal number of bedrooms and bathrooms.
+      </div>
+    </div>
+
+    <div id="priceSection" style="background:#f8fbff; border:1px solid #cfddf7; border-radius:14px; padding:22px; margin-bottom:6px;">
+      <label for="priceInput" style="display:block; font-weight:700; font-size:16px; color:#0f1f3d; margin-bottom:6px; line-height:1.5;">
+        If you were to purchase a house in <span id="pipeMarketType">your selected market type</span> area, what is your estimated budget?
+      </label>
+      <p style="font-size:13px; color:#5a6480; margin:0 0 12px 0;">
+        Enter numbers only — no dollar sign or commas needed.
+      </p>
+      <div style="display:flex; align-items:stretch; max-width:340px; border:2px solid #cfddf7; border-radius:8px; overflow:hidden; background-color:#ffffff;">
+        <span style="display:inline-flex; align-items:center; padding:0 12px; font-size:16px; font-weight:700; color:#5a6480; background:#f4f6fb; border-right:1px solid #e3e8f2;">$</span>
+        <input
+          id="priceInput"
+          name="priceInput"
+          type="text"
+          inputmode="numeric"
+          autocomplete="off"
+          placeholder="e.g. 350000"
+          style="width:100%; padding:12px 14px; font-size:16px; border:0; outline:none; color:#17213a; background-color:#ffffff; box-sizing:border-box;"
+        />
+      </div>
+      <div id="priceError" style="display:none; color:#b00020; margin-top:10px; font-weight:600; font-size:14px;">
+        ⚠️ Please enter a valid purchase price in U.S. dollars.
+      </div>
+    </div>
+
+  </div>
+</div>

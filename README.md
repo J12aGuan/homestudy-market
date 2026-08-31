@@ -19,7 +19,27 @@ The main behaviors captured are:
 - search intensity and inspection behavior
 - purchase timing, purchase price, and end-of-game payout
 
-## Project files
+## Repository layout
+
+As of Aug 2026 the study is split into **two separate Qualtrics surveys**, so the
+code is split into three folders:
+
+- `combined/`: the original single survey that ran filtering + Phase 1 + Phase 2 back
+  to back. Frozen, fully verified, and kept so we can always revert to a working
+  version.
+- `phase1/`: the standalone Phase 1 survey (filtering questions + the rating task).
+  This is where active work happens; see `phase1/REVISIONS.md` for the revision list.
+- `phase2/`: the standalone Phase 2 survey. Not started — the bidding-game code to
+  start from is in `combined/`.
+
+Shared across all three:
+
+- `scripts/extract_firebase_data.py`: exports raw Firestore data to JSON
+- `scripts/clean_firebase_data.py`: converts the raw export to CSV
+- `sample_data/`: fake property pool and an example cleaned output
+- `research_design_doc.md`: study design reference
+
+## Project files (inside `combined/`, and mirrored in `phase1/` where still used)
 
 - `id.html` and `id.qualtrics.js`: welcome screen with participant ID entry and the eligibility filter question
 - `setup.html` and `setup.qualtrics.js`: housing profile page (preferred market type, ideal bedrooms/bathrooms, self-reported reasonable purchase price)
@@ -27,9 +47,6 @@ The main behaviors captured are:
 - `phase2.html` and `phase2.qualtrics.js`: Phase 2 bidding game
 - `phase1_instructions.html` and `phase2_instructions.html`: instruction pages shown before the games (static HTML, no JavaScript)
 - `instruction_assets/`: annotated screenshots referenced by the instruction pages
-- `scripts/extract_firebase_data.py`: exports raw Firestore data to JSON
-- `scripts/clean_firebase_data.py`: converts the raw export to CSV
-- `sample_data/homestudy_market_clean_sample.csv`: example cleaned output
 
 ## How to run it locally
 
