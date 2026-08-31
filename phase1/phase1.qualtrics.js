@@ -23,11 +23,18 @@ Qualtrics.SurveyEngine.addOnReady(function () {
       depth += 1;
     }
 
+    // The Qualtrics skin centers a narrow column; Phase 1 draws its own
+    // full-bleed layout, so the wrappers give up their width caps and side
+    // padding (professor's Aug 2026 note about whitespace on both sides).
     ancestors.forEach(function (el) {
       el.style.maxWidth = "100%";
       el.style.width = "100%";
       el.style.overflow = "visible";
       el.style.boxSizing = "border-box";
+      el.style.paddingLeft = "0";
+      el.style.paddingRight = "0";
+      el.style.marginLeft = "0";
+      el.style.marginRight = "0";
     });
 
     root.style.width = "100%";
@@ -53,13 +60,16 @@ Qualtrics.SurveyEngine.addOnReady(function () {
   const IDEAL_BATHROOMS_FIELD = "ideal_bathrooms";
   const SELF_REPORTED_PRICE_FIELD = "self_reported_price";
 
-  // House assignment (spec section 2): four unique houses from the
+  // House assignment (spec section 2, revised Aug 2026): houses come from the
   // respondent's market type, bed/bath within +-1 of the ideal, nearest in
-  // underlying price to self_reported_price, shown in random order. The
-  // realized assignment (and the randomly sampled display attributes from
-  // spec section 3) is persisted here so a page reload keeps the same houses.
+  // underlying price to self_reported_price, shown in random order. Phase 1 now
+  // runs as ROUND_COUNT rounds of PROPERTIES_PER_ROUND houses each. The realized
+  // assignment (and the randomly sampled display attributes from spec section 3)
+  // is persisted here so a page reload keeps the same houses and rounds.
   const ASSIGNMENT_FIELD = "phase1Assignment";
-  const ASSIGNED_PROPERTY_COUNT = 4;
+  const ROUND_COUNT = 4;
+  const PROPERTIES_PER_ROUND = 3;
+  const TOTAL_PROPERTY_SLOTS = ROUND_COUNT * PROPERTIES_PER_ROUND;
 
   // Randomly sampled display attributes (spec section 3).
   const WALKABILITY_LEVELS = [
@@ -86,12 +96,12 @@ Qualtrics.SurveyEngine.addOnReady(function () {
 
   const UI_COPY = {
     title: "Rate These Properties",
-    subtitle: "Compare the properties side by side and enter the maximum price you would pay for each one before moving on.",
     finish: "Finish Phase 1",
+    nextRound: "Continue to Round ",
     saving: "Saving your response...",
     complete: "All property responses are saved. You can continue to the next survey page.",
     completeTitle: "Phase 1 Complete",
-    completeSubtitle: "You have submitted a maximum WTP for every property in Phase 1. Use the survey's Next button to move into Phase 2."
+    completeSubtitle: "You have entered a maximum price for every property. Use the survey's Next button to continue."
   };
 
   const FIREBASE_SDK_URLS = [
@@ -102,6 +112,8 @@ Qualtrics.SurveyEngine.addOnReady(function () {
   let loadedProperties = [];
   let respondentProfile = null;
   let runtimeResponses = [];
+  let currentRoundIndex = 0;
+  let savedRounds = {};
   let saveInFlight = false;
   let saveErrorMessage = "";
   let completionMessage = "";
@@ -164,30 +176,6 @@ Qualtrics.SurveyEngine.addOnReady(function () {
       flex-wrap: wrap;
     }
 
-    .hs-phase-indicator {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      background: #eef2f8;
-      border-radius: 10px;
-      padding: 4px;
-    }
-
-    .hs-phase-tab {
-      padding: 7px 14px;
-      border-radius: 8px;
-      font-size: 12px;
-      font-weight: 700;
-      color: #5a6480;
-      white-space: nowrap;
-    }
-
-    .hs-phase-tab.active {
-      background: #0f1f3d;
-      color: white;
-      box-shadow: 0 8px 16px rgba(15,31,61,0.14);
-    }
-
     .hs-top-progress {
       display: flex;
       align-items: center;
@@ -215,46 +203,10 @@ Qualtrics.SurveyEngine.addOnReady(function () {
       border-radius: inherit;
     }
 
-    .hs-phase-banner {
-      background: linear-gradient(135deg, #0f1f3d, #1a3260);
-      padding: 14px 28px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      flex-wrap: wrap;
-    }
-
-    .hs-phase-banner-text {
-      color: rgba(255,255,255,0.78);
-      font-size: 13px;
-      line-height: 1.45;
-      max-width: 860px;
-    }
-
-    .hs-phase-banner-text strong {
-      color: white;
-    }
-
-    .hs-no-price-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 7px;
-      background: rgba(232,163,23,0.18);
-      border: 1px solid rgba(255,196,68,0.48);
-      color: #ffe39b;
-      border-radius: 999px;
-      padding: 6px 12px;
-      font-size: 11px;
-      font-weight: 800;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-    }
-
     .hs-phase1-wrap {
-      width: min(1360px, calc(100% - 40px));
-      margin: 24px auto 0;
-      padding: 0;
+      width: 100%;
+      margin: 22px 0 0;
+      padding: 0 28px;
       box-sizing: border-box;
     }
 
@@ -285,7 +237,7 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     }
 
     .hs-title {
-      font-size: 24px;
+      font-size: 34px;
       font-weight: 700;
       color: #0f1f3d;
       margin: 0 0 4px 0;
@@ -333,7 +285,7 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     }
 
     .hs-progress-copy {
-      font-size: 12px;
+      font-size: 17px;
       color: #5a6480;
       font-weight: 600;
     }
@@ -345,8 +297,8 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     }
 
     .hs-progress-step {
-      width: 10px;
-      height: 10px;
+      width: 14px;
+      height: 14px;
       border-radius: 999px;
       background: #d8d1c4;
       transition: background 140ms ease, transform 140ms ease;
@@ -363,8 +315,8 @@ Qualtrics.SurveyEngine.addOnReady(function () {
 
     .hs-card-grid {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 18px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 22px;
       align-items: stretch;
     }
 
@@ -376,24 +328,13 @@ Qualtrics.SurveyEngine.addOnReady(function () {
       border: 1px solid #c8d8ff;
       color: #27417a;
       border-radius: 10px;
-      padding: 8px 14px;
-      font-size: 13px;
+      padding: 10px 18px;
+      font-size: 20px;
       font-weight: 700;
-      margin: 8px 0 2px 0;
-    }
-
-    .hs-wtp-explainer {
-      background: #f4f9ff;
-      border: 1px solid #c8d8ff;
-      border-radius: 12px;
-      padding: 12px 14px;
-      font-size: 13px;
-      color: #27417a;
-      line-height: 1.5;
       margin: 10px 0 2px 0;
     }
 
-    @media (max-width: 1280px) {
+    @media (max-width: 1100px) {
       .hs-card-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
@@ -448,14 +389,14 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     }
 
     .hs-card-body {
-      padding: 14px 16px;
+      padding: 20px 22px;
       display: flex;
       flex-direction: column;
       flex: 1;
     }
 
     .hs-address {
-      font-size: 18px;
+      font-size: 24px;
       font-weight: 800;
       color: #0f1f3d;
       margin-bottom: 2px;
@@ -483,17 +424,41 @@ Qualtrics.SurveyEngine.addOnReady(function () {
 
     .hs-attrs {
       display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      margin-bottom: 10px;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .hs-attr-row {
+      display: flex;
+      flex-wrap: nowrap;
+      gap: 8px;
+    }
+
+    .hs-attr-row .hs-chip {
+      flex: 1 1 0;
+      text-align: center;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .hs-attr-row.full .hs-chip {
+      flex: 1 1 100%;
+      text-align: left;
+      white-space: normal;
+      overflow: visible;
+      min-height: 44px;
+      display: flex;
+      align-items: center;
     }
 
     .hs-chip {
       background: #f4f7fb;
       border: 1px solid #e2eaf5;
       border-radius: 999px;
-      padding: 6px 10px;
-      font-size: 11px;
+      padding: 8px 13px;
+      font-size: 15px;
       color: #44506c;
       transition: transform 120ms ease, background 120ms ease, box-shadow 120ms ease;
       cursor: default;
@@ -521,7 +486,7 @@ Qualtrics.SurveyEngine.addOnReady(function () {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      font-size: 11px;
+      font-size: 15px;
       color: #5a6480;
       margin-bottom: 6px;
     }
@@ -543,9 +508,9 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     }
 
     .hs-wtp-prefix {
-      padding: 0 10px;
+      padding: 0 13px;
       color: #5a6480;
-      font-size: 12px;
+      font-size: 17px;
       font-weight: 700;
       background: #f4f6fb;
       border-right: 1px solid #e3e8f2;
@@ -557,8 +522,8 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     .hs-wtp-input {
       width: 100%;
       border: 0;
-      padding: 10px 11px;
-      font-size: 12px;
+      padding: 13px 14px;
+      font-size: 17px;
       color: #0f1f3d;
       font-weight: 700;
       outline: none;
@@ -570,7 +535,7 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     .hs-wtp-input::placeholder {
       color: #5a6480;
       font-weight: 400;
-      font-size: 12px;
+      font-size: 16px;
     }
 
     .hs-open-house {
@@ -579,8 +544,8 @@ Qualtrics.SurveyEngine.addOnReady(function () {
       align-items: center;
       background: #f5f8fc;
       border-radius: 12px;
-      padding: 11px 12px;
-      font-size: 12px;
+      padding: 13px 14px;
+      font-size: 15px;
       cursor: pointer;
       margin-bottom: 10px;
       border: 1px solid #ece3d3;
@@ -641,15 +606,15 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     }
 
     .hs-note {
-      font-size: 11px;
+      font-size: 15px;
       color: #7a7488;
     }
 
     .hs-button {
       border: 0;
       border-radius: 10px;
-      padding: 10px 14px;
-      font-size: 13px;
+      padding: 14px 22px;
+      font-size: 17px;
       font-weight: 700;
       cursor: pointer;
       transition: transform 120ms ease, opacity 120ms ease, background 120ms ease;
@@ -672,10 +637,14 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     }
 
     @media (max-width: 900px) {
-      .hs-platform-header,
-      .hs-phase-banner {
+      .hs-platform-header {
         padding-left: 18px;
         padding-right: 18px;
+      }
+
+      .hs-phase1-wrap {
+        padding-left: 16px;
+        padding-right: 16px;
       }
 
       .hs-card-grid {
@@ -701,7 +670,7 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     return createEl("div", "hs-chip", text);
   }
 
-  function renderPlatformHeader(ratedCount, totalCount) {
+  function renderPlatformHeader(completedRounds) {
     const header = createEl("div", "hs-platform-header");
     const logo = createEl("div", "hs-header-logo");
     logo.appendChild(createEl("span", "hs-header-logo-mark", "H"));
@@ -709,36 +678,21 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     header.appendChild(logo);
 
     const right = createEl("div", "hs-header-right");
-    const phaseIndicator = createEl("div", "hs-phase-indicator");
-    phaseIndicator.appendChild(createEl("div", "hs-phase-tab active", "Phase 1 · Rating"));
-    phaseIndicator.appendChild(createEl("div", "hs-phase-tab", "Phase 2 · Market"));
-    right.appendChild(phaseIndicator);
-
     const topProgress = createEl("div", "hs-top-progress");
-    topProgress.appendChild(createEl("div", "hs-top-progress-label", ratedCount + " / " + totalCount + " rated"));
+    topProgress.appendChild(createEl(
+      "div",
+      "hs-top-progress-label",
+      completedRounds + " / " + ROUND_COUNT + " rounds"
+    ));
     const track = createEl("div", "hs-top-progress-track");
     const fill = createEl("div", "hs-top-progress-fill");
-    fill.style.width = (totalCount ? Math.round((ratedCount / totalCount) * 100) : 0) + "%";
+    fill.style.width = Math.round((completedRounds / ROUND_COUNT) * 100) + "%";
     track.appendChild(fill);
     topProgress.appendChild(track);
     right.appendChild(topProgress);
 
     header.appendChild(right);
     return header;
-  }
-
-  function renderPhaseBanner() {
-    const banner = createEl("div", "hs-phase-banner");
-    const text = createEl("div", "hs-phase-banner-text");
-    text.appendChild(createEl("strong", "", "Phase 1 — Preference Elicitation: "));
-    text.appendChild(document.createTextNode(
-      "Rate each property and indicate open house interest. Prices stay hidden so we capture your baseline preferences before the market opens."
-    ));
-    banner.appendChild(text);
-    const badge = createEl("div", "hs-no-price-badge", "Prices Hidden");
-    badge.prepend(document.createTextNode("🔒 "));
-    banner.appendChild(badge);
-    return banner;
   }
 
   function loadScript(src) {
@@ -1118,12 +1072,15 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     };
   }
 
-  // Spec section 2: candidate pool = same market type, bed/bath within +-1
-  // of the ideal, then the four houses nearest in underlying price to
-  // self_reported_price, shown in random order. If the strict pool has
-  // fewer than four houses, the bed/bath filter is relaxed (recorded via
-  // relaxedRoomFilter) rather than failing the survey.
-  function assignProperties(items, profile) {
+  // Spec section 2 (revised Aug 2026): candidate pool = same market type,
+  // bed/bath within +-1 of the ideal, ranked by closeness in underlying price to
+  // self_reported_price. Phase 1 needs TOTAL_PROPERTY_SLOTS houses (ROUND_COUNT
+  // rounds x PROPERTIES_PER_ROUND). Houses that match the bed/bath filter are
+  // used first; if there are not enough, the filter is relaxed only to top the
+  // list up (recorded via relaxedRoomFilter). If the market type still has fewer
+  // unique houses than there are slots, houses repeat across rounds -- never
+  // twice inside the same round -- and that is recorded via reusedProperties.
+  function buildRoundAssignment(items, profile) {
     const candidates = [];
     items.forEach(function (item, index) {
       const price = getPropertyPrice(item);
@@ -1132,29 +1089,53 @@ Qualtrics.SurveyEngine.addOnReady(function () {
       candidates.push({item: item, id: getPropertyId(item, index), price: price});
     });
 
-    const strictPool = candidates.filter(function (entry) {
-      return roomCountWithinOne(entry.item.beds, profile.bedrooms) &&
-        roomCountWithinOne(entry.item.baths, profile.bathrooms);
-    });
-
-    const relaxed = strictPool.length < ASSIGNED_PROPERTY_COUNT;
-    const pool = relaxed ? candidates : strictPool;
-
-    if (pool.length < ASSIGNED_PROPERTY_COUNT) {
+    if (candidates.length < PROPERTIES_PER_ROUND) {
       throw new Error(
-        "Only " + pool.length + " properties are available for market type " + profile.code +
-        ". propertyItems needs at least " + ASSIGNED_PROPERTY_COUNT + " properties per market type."
+        "Only " + candidates.length + " properties are available for market type " + profile.code +
+        ". propertyItems needs at least " + PROPERTIES_PER_ROUND + " properties per market type."
       );
     }
 
-    shuffleInPlace(pool);
-    pool.sort(function (a, b) {
+    function byPriceDistance(a, b) {
       return Math.abs(a.price - profile.price) - Math.abs(b.price - profile.price);
-    });
+    }
 
-    const selected = pool.slice(0, ASSIGNED_PROPERTY_COUNT);
-    shuffleInPlace(selected);
-    return {selected: selected, relaxedRoomFilter: relaxed};
+    const matchesRooms = function (entry) {
+      return roomCountWithinOne(entry.item.beds, profile.bedrooms) &&
+        roomCountWithinOne(entry.item.baths, profile.bathrooms);
+    };
+
+    const strictPool = shuffleInPlace(candidates.filter(matchesRooms)).sort(byPriceDistance);
+    const relaxedPool = shuffleInPlace(candidates.filter(function (entry) {
+      return !matchesRooms(entry);
+    })).sort(byPriceDistance);
+
+    const unique = strictPool.slice(0, TOTAL_PROPERTY_SLOTS);
+    const relaxedUsed = unique.length < TOTAL_PROPERTY_SLOTS && relaxedPool.length > 0;
+    while (unique.length < TOTAL_PROPERTY_SLOTS && relaxedPool.length) {
+      unique.push(relaxedPool.shift());
+    }
+
+    // Cycle through the same shuffled order when the pool is short. A cycle of
+    // at least PROPERTIES_PER_ROUND entries guarantees no house repeats inside a
+    // single round.
+    shuffleInPlace(unique);
+    const slots = [];
+    while (slots.length < TOTAL_PROPERTY_SLOTS) {
+      slots.push(unique[slots.length % unique.length]);
+    }
+
+    const rounds = [];
+    for (let roundIndex = 0; roundIndex < ROUND_COUNT; roundIndex += 1) {
+      rounds.push(slots.slice(roundIndex * PROPERTIES_PER_ROUND, (roundIndex + 1) * PROPERTIES_PER_ROUND));
+    }
+
+    return {
+      rounds: rounds,
+      relaxedRoomFilter: relaxedUsed,
+      reusedProperties: unique.length < TOTAL_PROPERTY_SLOTS,
+      uniquePropertyCount: unique.length
+    };
   }
 
   function decorateAssignedProperty(shapedProperty, baseItem, attributes) {
@@ -1171,17 +1152,41 @@ Qualtrics.SurveyEngine.addOnReady(function () {
 
     try {
       const parsed = JSON.parse(raw);
-      if (!parsed || !Array.isArray(parsed.properties) ||
-        parsed.properties.length !== ASSIGNED_PROPERTY_COUNT) {
+      if (!parsed || !Array.isArray(parsed.rounds) || parsed.rounds.length !== ROUND_COUNT) {
         return null;
       }
-      const allKnown = parsed.properties.every(function (entry) {
-        return entry && entry.propertyId && baseById[entry.propertyId] && entry.attributes;
+      const allKnown = parsed.rounds.every(function (round) {
+        return Array.isArray(round) &&
+          round.length === PROPERTIES_PER_ROUND &&
+          round.every(function (entry) {
+            return entry && entry.propertyId && baseById[entry.propertyId] && entry.attributes;
+          });
       });
       return allKnown ? parsed : null;
     } catch (error) {
       return null;
     }
+  }
+
+  // Flattens the per-round assignment into one list of TOTAL_PROPERTY_SLOTS
+  // entries. Each entry keeps its round and its position inside that round, so
+  // the rest of the page can keep addressing properties by a single index.
+  function flattenRounds(rounds, baseById) {
+    const flat = [];
+    rounds.forEach(function (round, roundIndex) {
+      round.forEach(function (entry, slotIndex) {
+        const base = baseById[entry.propertyId] || {};
+        const shaped = decorateAssignedProperty(
+          shapePropertyData(base, entry.propertyId, slotIndex),
+          base,
+          entry.attributes
+        );
+        shaped.roundIndex = roundIndex;
+        shaped.slotIndex = slotIndex;
+        flat.push(shaped);
+      });
+    });
+    return flat;
   }
 
   function readPropertiesFromEmbeddedData() {
@@ -1203,35 +1208,32 @@ Qualtrics.SurveyEngine.addOnReady(function () {
 
       const storedAssignment = readStoredAssignment(baseById);
       if (storedAssignment) {
-        return storedAssignment.properties.map(function (entry, index) {
-          const base = baseById[entry.propertyId];
-          return decorateAssignedProperty(
-            shapePropertyData(base, entry.propertyId, index),
-            base,
-            entry.attributes
-          );
-        });
+        return flattenRounds(storedAssignment.rounds, baseById);
       }
 
-      const assignment = assignProperties(parsed, respondentProfile);
-      const storedProperties = [];
-      const shaped = assignment.selected.map(function (entry, index) {
-        const attributes = generateDisplayAttributes(respondentProfile);
-        storedProperties.push({propertyId: entry.id, attributes: attributes});
-        return decorateAssignedProperty(
-          shapePropertyData(entry.item, entry.id, index),
-          entry.item,
-          attributes
-        );
+      const assignment = buildRoundAssignment(parsed, respondentProfile);
+
+      // Display attributes are sampled once per house, so a house that appears
+      // in more than one round is described identically both times.
+      const attributesByPropertyId = {};
+      const storedRounds = assignment.rounds.map(function (round) {
+        return round.map(function (entry) {
+          if (!attributesByPropertyId[entry.id]) {
+            attributesByPropertyId[entry.id] = generateDisplayAttributes(respondentProfile);
+          }
+          return {propertyId: entry.id, attributes: attributesByPropertyId[entry.id]};
+        });
       });
 
       setEmbeddedDataValue(ASSIGNMENT_FIELD, JSON.stringify({
         marketTypeCode: respondentProfile.code,
         relaxedRoomFilter: assignment.relaxedRoomFilter,
-        properties: storedProperties
+        reusedProperties: assignment.reusedProperties,
+        uniquePropertyCount: assignment.uniquePropertyCount,
+        rounds: storedRounds
       }));
 
-      return shaped;
+      return flattenRounds(storedRounds, baseById);
     } catch (error) {
       console.error("Could not build the Phase 1 property assignment.", error);
       throw new Error(error.message || "Property data in Qualtrics could not be parsed. Check the propertyItems JSON.");
@@ -1244,15 +1246,44 @@ Qualtrics.SurveyEngine.addOnReady(function () {
   }
 
   function saveRatingsToEmbeddedData() {
-    const ratingsByPropertyId = {};
+    const ratingsByRound = {};
     runtimeResponses.forEach(function (state) {
-      ratingsByPropertyId[state.docId] = {
+      const key = "round" + (state.roundIndex + 1);
+      if (!ratingsByRound[key]) ratingsByRound[key] = {};
+      ratingsByRound[key][state.docId] = {
         wtp: state.wtp,
         openHouse: state.openHouse
       };
     });
 
-    setEmbeddedDataValue("phase1Ratings", JSON.stringify(ratingsByPropertyId));
+    setEmbeddedDataValue("phase1Ratings", JSON.stringify(ratingsByRound));
+  }
+
+  function indicesForRound(roundIndex) {
+    const indices = [];
+    runtimeResponses.forEach(function (state, index) {
+      if (state.roundIndex === roundIndex) indices.push(index);
+    });
+    return indices;
+  }
+
+  function roundIsComplete(roundIndex) {
+    const indices = indicesForRound(roundIndex);
+    return indices.length > 0 && indices.every(function (index) {
+      return runtimeResponses[index].wtp !== null;
+    });
+  }
+
+  function completedRoundCount() {
+    let completed = 0;
+    for (let roundIndex = 0; roundIndex < ROUND_COUNT; roundIndex += 1) {
+      if (roundIsComplete(roundIndex)) completed += 1;
+    }
+    return completed;
+  }
+
+  function isLastRound() {
+    return currentRoundIndex >= ROUND_COUNT - 1;
   }
 
   function parseWtpValue(rawValue) {
@@ -1271,12 +1302,11 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     });
   }
 
-  function saveAllResponses() {
+  function saveResponsesThroughRound(roundIndex, includeSessionMetadata) {
     const userId = getUserId();
-    const sessionId = getSessionId();
     const responseDocId = getResponseDocId();
 
-    if (runtimeResponses.some(function (state) { return state.wtp === null; })) {
+    if (!roundIsComplete(roundIndex)) {
       return Promise.reject(new Error("A WTP value is required for every property before saving."));
     }
 
@@ -1298,16 +1328,20 @@ Qualtrics.SurveyEngine.addOnReady(function () {
         .collection("Ratings");
 
       let relaxedRoomFilter = null;
+      let reusedProperties = null;
       try {
         const storedAssignmentRaw = getEmbeddedDataValue(ASSIGNMENT_FIELD);
         if (storedAssignmentRaw) {
-          relaxedRoomFilter = Boolean(JSON.parse(storedAssignmentRaw).relaxedRoomFilter);
+          const storedAssignment = JSON.parse(storedAssignmentRaw);
+          relaxedRoomFilter = Boolean(storedAssignment.relaxedRoomFilter);
+          reusedProperties = Boolean(storedAssignment.reusedProperties);
         }
       } catch (assignmentError) {
         relaxedRoomFilter = null;
+        reusedProperties = null;
       }
 
-      const saveMetadata = metadataDoc.set({
+      const saveMetadata = includeSessionMetadata ? metadataDoc.set({
         userId: userId || "",
         treatmentGroupId: getEmbeddedDataValue(TREATMENT_FIELD) || "",
         eligiblePurchase: getEmbeddedDataValue("eligiblePurchase") || "",
@@ -1317,19 +1351,25 @@ Qualtrics.SurveyEngine.addOnReady(function () {
         idealBathrooms: respondentProfile ? respondentProfile.bathrooms : null,
         selfReportedPrice: respondentProfile ? respondentProfile.price : null,
         relaxedRoomFilter: relaxedRoomFilter,
+        reusedProperties: reusedProperties,
+        roundCount: ROUND_COUNT,
+        propertiesPerRound: PROPERTIES_PER_ROUND,
         assignedPropertyIds: loadedProperties.map(function (property) {
           return property.docId;
         })
-      }, {merge: true});
+      }, {merge: true}) : Promise.resolve();
 
-      const saveRatings = runtimeResponses.map(function (state, index) {
+      const saveRatings = indicesForRound(roundIndex).map(function (index) {
+        const state = runtimeResponses[index];
         const property = loadedProperties[index] || {};
         return ratingsCollection
-          .doc(state.docId)
+          .doc("round-" + (roundIndex + 1) + "-" + state.docId)
           .set({
+            propertyId: state.docId,
+            round: roundIndex + 1,
             wtp: state.wtp,
             openHouse: state.openHouse,
-            displayOrder: index + 1,
+            displayOrder: property.slotIndex !== undefined ? property.slotIndex + 1 : null,
             underlyingPrice: property.underlyingPrice !== undefined ? property.underlyingPrice : null,
             attributes: property.attributes || null
           }, {merge: true});
@@ -1352,8 +1392,7 @@ Qualtrics.SurveyEngine.addOnReady(function () {
 
   function renderLoadingState() {
     root.innerHTML = "";
-    root.appendChild(renderPlatformHeader(0, 0));
-    root.appendChild(renderPhaseBanner());
+    root.appendChild(renderPlatformHeader(0));
     const wrap = createEl("div", "hs-phase1-wrap");
     wrap.appendChild(createEl("h2", "hs-title", "Loading properties..."));
     wrap.appendChild(createEl(
@@ -1366,8 +1405,7 @@ Qualtrics.SurveyEngine.addOnReady(function () {
 
   function renderErrorState(message) {
     root.innerHTML = "";
-    root.appendChild(renderPlatformHeader(0, 0));
-    root.appendChild(renderPhaseBanner());
+    root.appendChild(renderPlatformHeader(0));
     const wrap = createEl("div", "hs-phase1-wrap");
     wrap.appendChild(createEl("h2", "hs-title", UI_COPY.title));
     wrap.appendChild(createEl("div", "hs-status error", message));
@@ -1376,8 +1414,7 @@ Qualtrics.SurveyEngine.addOnReady(function () {
 
   function renderCompletionScreen() {
     root.innerHTML = "";
-    root.appendChild(renderPlatformHeader(loadedProperties.length, loadedProperties.length));
-    root.appendChild(renderPhaseBanner());
+    root.appendChild(renderPlatformHeader(ROUND_COUNT));
 
     const wrap = createEl("div", "hs-phase1-wrap");
     const header = createEl("div", "hs-section-header");
@@ -1395,7 +1432,7 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     body.appendChild(createEl(
       "div",
       "hs-note",
-      "Phase 1 is locked in. Continue only when you're ready to begin Phase 2."
+      "Your answers for all " + ROUND_COUNT + " rounds are locked in."
     ));
     card.appendChild(body);
     panel.appendChild(card);
@@ -1413,27 +1450,38 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     // Aug 2026): houses are identified by a neutral number and described only
     // by aggregate neighborhood/property chips.
     const body = createEl("div", "hs-card-body");
-    body.appendChild(createEl("div", "hs-address", "House " + (index + 1)));
+    const houseNumber = (property.slotIndex !== undefined ? property.slotIndex : index) + 1;
+    body.appendChild(createEl("div", "hs-address", "House " + houseNumber));
 
+    // Every card uses the same row structure so the houses line up when read
+    // side by side: bed/bath/sqft together, then one attribute per line.
     const attrs = createEl("div", "hs-attrs");
-    attrs.appendChild(createChip("🛏 " + property.beds + " bed"));
-    attrs.appendChild(createChip("🚿 " + property.baths + " bath"));
+
+    const facts = createEl("div", "hs-attr-row");
+    facts.appendChild(createChip("🛏 " + property.beds + " bed"));
+    facts.appendChild(createChip("🚿 " + property.baths + " bath"));
     if (property.sqft) {
-      attrs.appendChild(createChip("📐 " + property.sqft + " sqft"));
+      facts.appendChild(createChip("📐 " + property.sqft + " sqft"));
     }
+    attrs.appendChild(facts);
+
     if (property.attributes) {
-      attrs.appendChild(createChip("🏠 " + property.attributes.propertyType));
-      attrs.appendChild(createChip(
+      [
+        "🏠 " + property.attributes.propertyType,
         (property.attributes.walkTransitType === "transit" ? "🚌 " : "🚶 ") +
-        property.attributes.walkTransitText
-      ));
-      attrs.appendChild(createChip("💰 Cost of living: " + property.attributes.costOfLiving));
-      attrs.appendChild(createChip("🎓 School district: " + property.attributes.schoolRating));
+          property.attributes.walkTransitText,
+        "💰 Cost of living: " + property.attributes.costOfLiving,
+        "🎓 School district: " + property.attributes.schoolRating
+      ].forEach(function (text) {
+        const row = createEl("div", "hs-attr-row full");
+        row.appendChild(createChip(text));
+        attrs.appendChild(row);
+      });
     }
     body.appendChild(attrs);
 
     const wtpLabel = createEl("div", "hs-wtp-label");
-    wtpLabel.appendChild(createEl("span", "", "Maximum WTP"));
+    wtpLabel.appendChild(createEl("span", "", "Your maximum price"));
     wtpLabel.appendChild(createEl(
       "span",
       "hs-wtp-value",
@@ -1450,7 +1498,7 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     wtpInput.value = state.wtp !== null ? String(state.wtp) : "";
     wtpInput.dataset.index = String(index);
     wtpInput.dataset.role = "wtp-input";
-    wtpInput.setAttribute("aria-label", "Enter maximum willingness to pay for property " + (index + 1));
+    wtpInput.setAttribute("aria-label", "Enter maximum willingness to pay for house " + houseNumber);
     function updateWtpPreview(shouldRecordAction) {
       saveErrorMessage = "";
       clearErrorStatusUi();
@@ -1492,18 +1540,29 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     return card;
   }
 
+  function advanceButtonLabel() {
+    if (saveInFlight) return UI_COPY.saving;
+    return isLastRound() ? UI_COPY.finish : UI_COPY.nextRound + (currentRoundIndex + 2);
+  }
+
+  function advanceNoteText() {
+    if (!roundIsComplete(currentRoundIndex)) {
+      return "Enter a price for all " + PROPERTIES_PER_ROUND + " properties to continue.";
+    }
+    return isLastRound() ?
+      "Your answers will be saved when you finish." :
+      "Your answers for this round will be saved when you continue.";
+  }
+
   function renderPropertyComparison() {
     if (!completionMessage && typeof qthis.hideNextButton === "function") {
       qthis.hideNextButton();
     }
 
-    const ratedCount = runtimeResponses.filter(function (state) {
-      return state.wtp !== null;
-    }).length;
+    const completedRounds = completedRoundCount();
 
     root.innerHTML = "";
-    root.appendChild(renderPlatformHeader(ratedCount, loadedProperties.length));
-    root.appendChild(renderPhaseBanner());
+    root.appendChild(renderPlatformHeader(completedRounds));
 
     const wrap = createEl("div", "hs-phase1-wrap");
     const header = createEl("div", "hs-section-header");
@@ -1511,44 +1570,33 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     badge.appendChild(createEl("div", "hs-badge-dot"));
     badge.appendChild(document.createTextNode("PHASE 1 ACTIVE"));
     header.appendChild(badge);
+
+    // Revised Aug 2026: the page carries no instructions -- only the title and
+    // the respondent's market type. The willingness-to-pay explanation lives on
+    // its own instruction page before this one.
     header.appendChild(createEl("h2", "hs-title", UI_COPY.title));
-    header.appendChild(createEl("p", "hs-subtitle", UI_COPY.subtitle));
     if (respondentProfile && respondentProfile.label) {
       header.appendChild(createEl("div", "hs-market-banner", "🏙 Market type: " + respondentProfile.label));
     }
-
-    const explainer = createEl("div", "hs-wtp-explainer");
-    explainer.appendChild(createEl("strong", "", "💡 What is “maximum willingness to pay”? "));
-    explainer.appendChild(document.createTextNode(
-      "It is the highest price at which you would still be happy to own the house — one dollar more and you would " +
-      "rather walk away. If your bid wins later, you pay the market price, not your bid — so your best strategy is " +
-      "to enter exactly what each house is truly worth to you."
-    ));
-    header.appendChild(explainer);
-
-    const allRated = loadedProperties.length > 0 && ratedCount === loadedProperties.length;
-    const firstUnratedIndex = runtimeResponses.findIndex(function (state) {
-      return state.wtp === null;
-    });
 
     const progress = createEl("div", "hs-progress");
     progress.appendChild(
       createEl(
         "div",
         "hs-progress-copy",
-        ratedCount + " of " + loadedProperties.length + " properties rated"
+        completedRounds + " of " + ROUND_COUNT + " rounds completed"
       )
     );
     const progressSteps = createEl("div", "hs-progress-steps");
-    loadedProperties.forEach(function (_, index) {
+    for (let roundIndex = 0; roundIndex < ROUND_COUNT; roundIndex += 1) {
       let className = "hs-progress-step";
-      if (runtimeResponses[index].wtp !== null) {
+      if (roundIsComplete(roundIndex)) {
         className += " done";
-      } else if (index === firstUnratedIndex) {
+      } else if (roundIndex === currentRoundIndex) {
         className += " current";
       }
       progressSteps.appendChild(createEl("div", className));
-    });
+    }
     progress.appendChild(progressSteps);
 
     if (saveErrorMessage) {
@@ -1560,29 +1608,16 @@ Qualtrics.SurveyEngine.addOnReady(function () {
     }
 
     const cardGrid = createEl("div", "hs-card-grid");
-    loadedProperties.forEach(function (property, index) {
-      cardGrid.appendChild(renderPropertyCard(property, runtimeResponses[index], index));
+    indicesForRound(currentRoundIndex).forEach(function (index) {
+      cardGrid.appendChild(renderPropertyCard(loadedProperties[index], runtimeResponses[index], index));
     });
 
     const actions = createEl("div", "hs-actions");
-    actions.appendChild(createEl(
-      "div",
-      "hs-note",
-      allRated ?
-        "Your selections will be saved when you finish." :
-        "Enter a WTP amount for every property to unlock the next survey page."
-    ));
-    const nextButton = createEl(
-      "button",
-      "hs-button primary",
-      UI_COPY.finish
-    );
+    actions.appendChild(createEl("div", "hs-note", advanceNoteText()));
+    const nextButton = createEl("button", "hs-button primary", advanceButtonLabel());
     nextButton.type = "button";
-    nextButton.disabled = !allRated || saveInFlight;
+    nextButton.disabled = !roundIsComplete(currentRoundIndex) || saveInFlight;
     nextButton.dataset.role = "finish-ratings";
-    if (saveInFlight) {
-      nextButton.textContent = UI_COPY.saving;
-    }
     actions.appendChild(nextButton);
 
     wrap.appendChild(header);
@@ -1593,51 +1628,42 @@ Qualtrics.SurveyEngine.addOnReady(function () {
   }
 
   function syncLiveUiState() {
-    const ratedCount = runtimeResponses.filter(function (state) {
-      return state.wtp !== null;
-    }).length;
-    const allRated = loadedProperties.length > 0 && ratedCount === loadedProperties.length;
-    const firstUnratedIndex = runtimeResponses.findIndex(function (state) {
-      return state.wtp === null;
-    });
+    const completedRounds = completedRoundCount();
 
     const progressCopy = root.querySelector(".hs-progress-copy");
     if (progressCopy) {
-      progressCopy.textContent = ratedCount + " of " + loadedProperties.length + " properties rated";
+      progressCopy.textContent = completedRounds + " of " + ROUND_COUNT + " rounds completed";
     }
 
     const topProgressLabel = root.querySelector(".hs-top-progress-label");
     if (topProgressLabel) {
-      topProgressLabel.textContent = ratedCount + " / " + loadedProperties.length + " rated";
+      topProgressLabel.textContent = completedRounds + " / " + ROUND_COUNT + " rounds";
     }
 
     const topProgressFill = root.querySelector(".hs-top-progress-fill");
     if (topProgressFill) {
-      topProgressFill.style.width =
-        (loadedProperties.length ? Math.round((ratedCount / loadedProperties.length) * 100) : 0) + "%";
+      topProgressFill.style.width = Math.round((completedRounds / ROUND_COUNT) * 100) + "%";
     }
 
     const progressSteps = root.querySelectorAll(".hs-progress-step");
-    progressSteps.forEach(function (step, index) {
+    progressSteps.forEach(function (step, roundIndex) {
       step.className = "hs-progress-step";
-      if (runtimeResponses[index].wtp !== null) {
+      if (roundIsComplete(roundIndex)) {
         step.classList.add("done");
-      } else if (index === firstUnratedIndex) {
+      } else if (roundIndex === currentRoundIndex) {
         step.classList.add("current");
       }
     });
 
     const note = root.querySelector(".hs-note");
     if (note) {
-      note.textContent = allRated ?
-        "Your selections will be saved when you finish." :
-        "Enter a WTP amount for every property to unlock the next survey page.";
+      note.textContent = advanceNoteText();
     }
 
     const nextButton = root.querySelector("[data-role='finish-ratings']");
     if (nextButton) {
-      nextButton.disabled = !allRated || saveInFlight;
-      nextButton.textContent = saveInFlight ? UI_COPY.saving : UI_COPY.finish;
+      nextButton.disabled = !roundIsComplete(currentRoundIndex) || saveInFlight;
+      nextButton.textContent = advanceButtonLabel();
     }
   }
 
@@ -1673,26 +1699,44 @@ Qualtrics.SurveyEngine.addOnReady(function () {
 
     const nextButton = event.target.closest("[data-role='finish-ratings']");
     if (nextButton && root.contains(nextButton)) {
-      const allRated = runtimeResponses.every(function (state) {
-        return state.wtp !== null;
-      });
-
-      if (saveInFlight || !allRated) {
+      if (saveInFlight || !roundIsComplete(currentRoundIndex)) {
         return;
       }
 
+      const roundToSave = currentRoundIndex;
+      const lastRound = isLastRound();
+
       saveErrorMessage = "";
-      recordAction("finish_phase1", "button", "finish_phase1", false);
+      recordAction(
+        lastRound ? "finish_phase1" : "finish_round",
+        lastRound ? "button" : "round",
+        lastRound ? "finish_phase1" : "round_" + (roundToSave + 1),
+        false
+      );
       saveInFlight = true;
       renderPropertyComparison();
 
-      saveAllResponses()
+      // Each round is written as it finishes, so a respondent who drops out
+      // partway through still leaves usable data for the rounds they completed.
+      saveResponsesThroughRound(roundToSave, true)
         .then(function () {
           saveInFlight = false;
-          completionMessage = UI_COPY.complete;
-          renderCompletionScreen();
-          if (typeof qthis.showNextButton === "function") {
-            qthis.showNextButton();
+          savedRounds[roundToSave] = true;
+
+          if (lastRound) {
+            completionMessage = UI_COPY.complete;
+            renderCompletionScreen();
+            if (typeof qthis.showNextButton === "function") {
+              qthis.showNextButton();
+            }
+            return;
+          }
+
+          currentRoundIndex = roundToSave + 1;
+          recordAction("start_round", "round", "round_" + (currentRoundIndex + 1));
+          renderPropertyComparison();
+          if (typeof window.scrollTo === "function") {
+            window.scrollTo(0, 0);
           }
         })
         .catch(function (error) {
@@ -1715,11 +1759,14 @@ Qualtrics.SurveyEngine.addOnReady(function () {
       runtimeResponses = properties.map(function (property) {
         return {
           docId: property.docId,
+          roundIndex: property.roundIndex,
           wtp: null,
           openHouse: false
         };
       });
       window.__housingRuntimeResponses = runtimeResponses;
+      currentRoundIndex = 0;
+      recordAction("start_round", "round", "round_1");
       renderPropertyComparison();
     })
     .catch(function (error) {

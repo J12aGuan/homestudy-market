@@ -1,0 +1,45 @@
+/* Phase 1 survey — full-width layout.
+   Paste into Qualtrics: Look & Feel > Style > Custom CSS.
+
+   The professor's Aug 2026 note: the survey has too much whitespace on both
+   sides (compare zillow.com). Qualtrics' default skin caps the content column
+   at roughly 750px and centers it; these rules let every page use the browser
+   width, with a small gutter so text never touches the edge. */
+
+.Skin #SkinContent,
+.Skin .SkinInner,
+.Skin #Questions,
+.Skin .QuestionOuter,
+.Skin .QuestionBody,
+.Skin .Inner,
+#SurveyEngineBody {
+  max-width: 100% !important;
+  width: 100% !important;
+  box-sizing: border-box;
+}
+
+.Skin .SkinInner {
+  padding-left: 24px !important;
+  padding-right: 24px !important;
+}
+
+/* The rating game draws its own full-bleed layout, so remove the gutter and the
+   question padding on that page only. */
+.Skin .QuestionOuter:has(#qualtrics-root),
+.Skin .QuestionBody:has(#qualtrics-root) {
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+/* Larger base type across the survey (professor: "make all fonts bigger"). */
+.Skin .QuestionText {
+  font-size: 19px;
+  line-height: 1.5;
+}
+
+@media (max-width: 820px) {
+  .Skin .SkinInner {
+    padding-left: 12px !important;
+    padding-right: 12px !important;
+  }
+}
